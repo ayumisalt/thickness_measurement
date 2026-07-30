@@ -117,10 +117,9 @@ def main() -> int:
                 "volume_range_root",
             )
         }
-        if not args.dry_run:
-            missing = [str(path) for path in programs.values() if not path.is_file()]
-            if missing:
-                raise SystemExit("missing ROOT executables: " + ", ".join(missing))
+        missing = [str(path) for path in programs.values() if not path.is_file()]
+        if missing:
+            raise SystemExit("missing ROOT executables: " + ", ".join(missing))
         thickness_program = [str(programs["track_thickness_root"])]
         summarize_program = [str(programs["summarize_result_root"])]
         volume_program = [str(programs["track_volume_root"])]
@@ -134,15 +133,14 @@ def main() -> int:
             output = area / args.area_output_name
         else:
             output = thickness_dir / area.name / args.area_output_name
-        if not args.dry_run:
-            if args.skip_thickness:
-                if not output.is_file():
-                    raise SystemExit(f"missing reused thickness output: {output}")
-            else:
-                if not image_json.is_file():
-                    raise SystemExit(f"missing image metadata: {image_json}")
-                if not track_file.is_file():
-                    raise SystemExit(f"missing track input: {track_file}")
+        if args.skip_thickness:
+            if not output.is_file():
+                raise SystemExit(f"missing reused thickness output: {output}")
+        else:
+            if not image_json.is_file():
+                raise SystemExit(f"missing image metadata: {image_json}")
+            if not track_file.is_file():
+                raise SystemExit(f"missing track input: {track_file}")
         area_inputs.append((area, image_json, track_file, output))
 
     if not args.dry_run:
