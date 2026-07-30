@@ -41,7 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--area-output-name",
         default="track_thickness.txt",
-        help="per-area thickness output filename",
+        help="per-area thickness output filename (default: track_thickness.txt)",
+    )
+    parser.add_argument(
+        "--thickness-dir",
+        help=(
+            "write per-area thickness files below this directory instead of "
+            "modifying the input area directories"
+        ),
     )
     parser.add_argument(
         "--results-dir",
@@ -79,6 +86,11 @@ def main() -> int:
     results_dir = Path(args.results_dir).expanduser()
     if not results_dir.is_absolute():
         results_dir = (Path.cwd() / results_dir).resolve()
+    thickness_dir = None
+    if args.thickness_dir:
+        thickness_dir = Path(args.thickness_dir).expanduser()
+        if not thickness_dir.is_absolute():
+            thickness_dir = (Path.cwd() / thickness_dir).resolve()
     build_dir = Path(args.build_dir).expanduser()
     if not build_dir.is_absolute():
         build_dir = (repository / build_dir).resolve()
@@ -90,9 +102,6 @@ def main() -> int:
         raise SystemExit(
             f"no area directories matched {args.pattern!r} under {data_parent}"
         )
-    if not args.dry_run:
-        results_dir.mkdir(parents=True, exist_ok=True)
-
     if args.backend == "python":
         thickness_program = [sys.executable, str(repository / "track_thickness.py")]
         summarize_program = [sys.executable, str(repository / "summarize_result.py")]
@@ -121,7 +130,10 @@ def main() -> int:
     for area in areas:
         image_json = area / "image.json"
         track_file = area / args.track_file
-        output = area / args.area_output_name
+        if thickness_dir is None:
+            output = area / args.area_output_name
+        else:
+            output = thickness_dir / area.name / args.area_output_name
         if not args.dry_run:
             if args.skip_thickness:
                 if not output.is_file():
@@ -132,6 +144,12 @@ def main() -> int:
                 if not track_file.is_file():
                     raise SystemExit(f"missing track input: {track_file}")
         area_inputs.append((area, image_json, track_file, output))
+
+    if not args.dry_run:
+        results_dir.mkdir(parents=True, exist_ok=True)
+        if not args.skip_thickness and thickness_dir is not None:
+            for _, _, _, output in area_inputs:
+                output.parent.mkdir(parents=True, exist_ok=True)
 
     thickness_outputs: list[Path] = []
     for index, (area, image_json, track_file, output) in enumerate(

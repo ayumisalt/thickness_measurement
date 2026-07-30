@@ -186,6 +186,7 @@ scripts/run-in-env.sh python scripts/process-dataset.py \
   /path/to/dataset-parent \
   --pattern 'AREA00_alpha_*' \
   --backend python \
+  --thickness-dir results/alpha-python/per-area \
   --results-dir results/alpha-python
 ```
 
@@ -197,8 +198,11 @@ scripts/run-in-env.sh python scripts/process-dataset.py \
   --pattern 'AREA00_alpha_*' \
   --backend root \
   --build-dir build \
+  --thickness-dir results/alpha-root/per-area \
   --results-dir results/alpha-root
 ```
+
+`--thickness-dir` を指定すると、入力area directoryを変更せず、areaごとの `track_thickness.txt` を指定directoryの下へ保存する。共有データを複数ユーザーで読み取る場合や、Python版とROOT版を別々に保存する場合は、この指定を推奨する。
 
 既存の各areaの `track_thickness.txt` を再利用し、集計・体積・可視化だけを再実行する場合:
 
