@@ -172,7 +172,7 @@ scripts/run-in-env.sh ./build/track_volume_root --help
 
 ## 8. 複数areaの一括処理
 
-`scripts/process-dataset.py` は、指定patternに一致する全areaについて以下を順に実行する。
+`scripts/process-dataset.py` は、指定patternに一致し、track初期値fileが存在するareaについて以下を順に実行する。track初期値fileがないareaは意図的な未測定eventとしてスキップし、対象area名と件数を表示する。
 
 1. 飛跡太さ測定
 2. 全areaのtrack IDを統合
@@ -204,7 +204,7 @@ scripts/run-in-env.sh python scripts/process-dataset.py \
 
 `--thickness-dir` を指定すると、入力area directoryを変更せず、areaごとの `track_thickness.txt` を指定directoryの下へ保存する。共有データを複数ユーザーで読み取る場合や、Python版とROOT版を別々に保存する場合は、この指定を推奨する。
 
-既存の各areaの `track_thickness.txt` を再利用し、集計・体積・可視化だけを再実行する場合:
+既存の各areaの `track_thickness.txt` を再利用し、集計・体積・可視化だけを再実行する場合は `--skip-thickness` を指定する。この場合、既存の測定結果がないareaをスキップする。
 
 ```bash
 scripts/run-in-env.sh python scripts/process-dataset.py \

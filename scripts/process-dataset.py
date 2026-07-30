@@ -126,6 +126,7 @@ def main() -> int:
         plot_program = [str(programs["volume_range_root"])]
 
     area_inputs: list[tuple[Path, Path, Path, Path]] = []
+    skipped_areas: list[tuple[Path, Path]] = []
     for area in areas:
         image_json = area / "image.json"
         track_file = area / args.track_file
@@ -135,13 +136,34 @@ def main() -> int:
             output = thickness_dir / area.name / args.area_output_name
         if args.skip_thickness:
             if not output.is_file():
-                raise SystemExit(f"missing reused thickness output: {output}")
+                skipped_areas.append((area, output))
+                continue
         else:
+            if not track_file.is_file():
+                skipped_areas.append((area, track_file))
+                continue
             if not image_json.is_file():
                 raise SystemExit(f"missing image metadata: {image_json}")
-            if not track_file.is_file():
-                raise SystemExit(f"missing track input: {track_file}")
         area_inputs.append((area, image_json, track_file, output))
+
+    if skipped_areas:
+        missing_kind = (
+            "reused thickness output" if args.skip_thickness else "track input"
+        )
+        print(f"Skipping {len(skipped_areas)} area(s) without {missing_kind}:")
+        for area, missing_path in skipped_areas:
+            print(f"  {area.name}: {missing_path}")
+
+    if not area_inputs:
+        required_kind = (
+            "reused thickness outputs" if args.skip_thickness else "track inputs"
+        )
+        raise SystemExit(f"no matching area has the required {required_kind}")
+
+    print(
+        f"Selected {len(area_inputs)} of {len(areas)} matching area(s) for processing",
+        flush=True,
+    )
 
     if not args.dry_run:
         results_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +175,7 @@ def main() -> int:
     for index, (area, image_json, track_file, output) in enumerate(
         area_inputs, start=1
     ):
-        print(f"\n[{index}/{len(areas)}] {area.name}", flush=True)
+        print(f"\n[{index}/{len(area_inputs)}] {area.name}", flush=True)
         if not args.skip_thickness:
             run(
                 thickness_program
