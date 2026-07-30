@@ -1,0 +1,9 @@
+# MachineName: RIKEN-STAGE08
+# Source: image.jsonTrackForUguisFitting.txt (outer points only)
+# Shrink: 1.9
+# columns: event_id track_id x_mm y_mm z_mm_shrunk
+1 1 29.23127 0.03057 -0.29051
+1 1 29.19946 0.03373 -0.32946
+
+1 2 29.19811 0.01162 -0.31559
+1 2 29.19939 0.03350 -0.33022

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Build and generated analysis output
+build/
+results/*
+!results/.gitkeep
+graph.pdf
+*.root
+
+# The microscope PNG stack is 712 MiB. Keep it locally, but do not commit it
+# without first enabling Git LFS or another data repository.
+sample_data/**/*.png
+
+# OS/editor
+.DS_Store
+*.swp
