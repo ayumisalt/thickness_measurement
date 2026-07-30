@@ -1,0 +1,18 @@
+name: thickness-measurement
+channels:
+  - conda-forge
+dependencies:
+  # Versions verified by dependency resolution on CentOS 7 / glibc 2.17
+  # (linux-64, 2026-07-30). Generate environment-linux-64.lock after the first
+  # successful installation to freeze every transitive dependency.
+  - python=3.12.13
+  - numpy=2.4.6
+  - scipy=1.18.0
+  - matplotlib=3.10.9
+  - opencv=4.13.0
+  - pytest=8.4.2
+  - root=6.40.02
+  - nlohmann_json=3.12.0
+  - cmake=4.4.1
+  - ninja=1.13.2
+  - cxx-compiler=1.11.0

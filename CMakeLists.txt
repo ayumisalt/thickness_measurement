@@ -1,13 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 project(thickness_measurement LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
 find_package(ROOT 6.32 REQUIRED COMPONENTS Core Graf Gpad Hist MathCore)
 find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(nlohmann_json 3.11 REQUIRED CONFIG)
+
+# ROOT 6.32--6.38 is commonly built with C++17, while ROOT 6.40 and later
+# conda-forge packages use C++20. Consumer code must use the same standard as
+# ROOT to avoid ABI and header incompatibilities.
+if(DEFINED ROOT_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD ${ROOT_CXX_STANDARD})
+else()
+  set(CMAKE_CXX_STANDARD 17)
+endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+message(STATUS "Using C++${CMAKE_CXX_STANDARD} to match ROOT")
 
 add_library(analysis_options INTERFACE)
 target_include_directories(analysis_options INTERFACE cpp/include)
