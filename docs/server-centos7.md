@@ -32,13 +32,14 @@ curl --cacert /path/to/ca-bundle.pem \
 ```bash
 SHARED_RUNTIME=/shared/path/to/thickness-measurement/runtime
 
-MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
+export THICKNESS_MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
+export MAMBA_ROOT_PREFIX="$HOME/micromamba"
 SHARED_CA="$SHARED_RUNTIME/certs/ca-certificates-2026.5.20.pem"
 
-export MAMBA_ROOT_PREFIX="$HOME/micromamba"
-
-"$MAMBA_EXE" config set ssl_verify "$SHARED_CA"
-eval "$("$MAMBA_EXE" shell hook --shell zsh)"
+env -u MAMBA_EXE \
+  "$THICKNESS_MAMBA_EXE" \
+  --root-prefix "$MAMBA_ROOT_PREFIX" \
+  config set ssl_verify "$SHARED_CA"
 ```
 
 micromamba 2.6系では、実行ファイルのbasenameが `micromamba` または `mamba` でなければ `run` や `activate` が正常に動作しない。また、symlinkは実体のversion付きファイル名へ解決されるため使用できない。共有directoryには `micromamba` という名前のbinaryコピーを用意する。
@@ -48,29 +49,32 @@ cd "$SHARED_RUNTIME/bin"
 install -m 0755 micromamba-2.6.2 micromamba
 ```
 
-各ユーザーは自分のhome directoryに環境とpackage cacheを持つ。必要であれば初期化部分を `~/.zshrc` に追加する。`micromamba info` の `envs directories` が自分のhome directory以下になっていることを確認する。
+各ユーザーは自分のhome directoryに環境とpackage cacheを持つ。`SHARED_RUNTIME`、`THICKNESS_MAMBA_EXE`、`MAMBA_ROOT_PREFIX` はshellを開くたびに必要になるため、ユーザー固有の設定fileまたは `~/.zshrc` に保存する。`micromamba info` の `envs directories` が自分のhome directory以下になっていることを確認する。
 
 ## 3. 環境作成
 
-リポジトリへ移動し、CentOS 7サーバー用の直接依存versionを指定した環境を作成する。
+リポジトリへ移動する。`environment-linux-64.lock` がある場合は、同じサーバーで動作確認済みの全packageを固定したlock fileを優先する。
 
 ```bash
 cd "$HOME/thickness_measurement"
 
-"$MAMBA_EXE" \
+env -u MAMBA_EXE \
+  "$THICKNESS_MAMBA_EXE" \
   --root-prefix "$MAMBA_ROOT_PREFIX" \
-  create \
-  --file environment-server.yml
+  create --name thickness-measurement \
+  --file environment-linux-64.lock
+```
+
+lock fileがまだ作成されていない場合だけ、CentOS 7用の直接依存versionを指定したYAMLから作成する。
+
+```bash
+env -u MAMBA_EXE \
+  "$THICKNESS_MAMBA_EXE" \
+  --root-prefix "$MAMBA_ROOT_PREFIX" \
+  create --file environment-server.yml
 ```
 
 サーバー共通の `PYTHONPATH` や `ROOTSYS` が設定されている場合、activateしただけではsystem packageが混入する可能性がある。以降のテスト、build、解析には `scripts/run-in-env.sh` を使用する。
-
-各shellで共有micromambaの場所を指定する。
-
-```bash
-export THICKNESS_MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
-export MAMBA_ROOT_PREFIX="$HOME/micromamba"
-```
 
 作成後の確認:
 
@@ -123,7 +127,8 @@ scripts/run-in-env.sh cmake --build build
 最初の環境作成とテストが成功した後、間接依存を含むpackage URLを固定する。
 
 ```bash
-"$MAMBA_EXE" \
+env -u MAMBA_EXE \
+  "$THICKNESS_MAMBA_EXE" \
   --root-prefix "$MAMBA_ROOT_PREFIX" \
   env export \
   --name thickness-measurement \
@@ -135,11 +140,11 @@ scripts/run-in-env.sh cmake --build build
 ```bash
 export MAMBA_ROOT_PREFIX="$HOME/micromamba"
 SHARED_RUNTIME=/shared/path/to/thickness-measurement/runtime
-MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
-eval "$("$MAMBA_EXE" shell hook --shell zsh)"
+export THICKNESS_MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
 
 cd "$HOME/thickness_measurement"
-"$MAMBA_EXE" \
+env -u MAMBA_EXE \
+  "$THICKNESS_MAMBA_EXE" \
   --root-prefix "$MAMBA_ROOT_PREFIX" \
   create \
   --name thickness-measurement \
@@ -164,3 +169,44 @@ scripts/run-in-env.sh python track_thickness.py --help
 
 scripts/run-in-env.sh ./build/track_volume_root --help
 ```
+
+## 8. 複数areaの一括処理
+
+`scripts/process-dataset.py` は、指定patternに一致する全areaについて以下を順に実行する。
+
+1. 飛跡太さ測定
+2. 全areaのtrack IDを統合
+3. 累積体積を計算
+4. volume–range plotを作成
+
+Python版:
+
+```bash
+scripts/run-in-env.sh python scripts/process-dataset.py \
+  /path/to/dataset-parent \
+  --pattern 'AREA00_alpha_*' \
+  --backend python \
+  --results-dir results/alpha-python
+```
+
+C++/ROOT版:
+
+```bash
+scripts/run-in-env.sh python scripts/process-dataset.py \
+  /path/to/dataset-parent \
+  --pattern 'AREA00_alpha_*' \
+  --backend root \
+  --build-dir build \
+  --results-dir results/alpha-root
+```
+
+既存の各areaの `track_thickness.txt` を再利用し、集計・体積・可視化だけを再実行する場合:
+
+```bash
+scripts/run-in-env.sh python scripts/process-dataset.py \
+  /path/to/dataset-parent \
+  --skip-thickness \
+  --results-dir results/alpha-replot
+```
+
+実行前に対象fileとcommandを確認する場合は `--dry-run` を付ける。

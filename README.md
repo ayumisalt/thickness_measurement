@@ -307,9 +307,11 @@ C++版はビルド後、任意のPython版出力を使って確認できます�
 
 Python版はSciPy、C++/ROOT版はROOT Minuitをfittingに使用するため、結果は完全なbit一致にはなりません。
 
-CentOS 7解析サーバーでのmicromamba環境、TLS設定、lock fileによる複数ユーザー間の再現方法は [サーバー環境構築手順](docs/server-centos7.md) を参照してください。
+CentOS 7解析サーバーでのmicromamba環境、TLS設定、`environment-linux-64.lock` による複数ユーザー間の再現方法は [サーバー環境構築手順](docs/server-centos7.md) を参照してください。
 
 共有サーバーでsystem PythonやROOTの環境変数が設定されている場合は、`scripts/run-in-env.sh` を使用して解析環境を分離できます。
+
+複数の撮影areaを一括処理する場合は `scripts/process-dataset.py` を使用できます。Python版とC++/ROOT版を `--backend` で選択でき、太さ測定からvolume–range plotの作成までを連続して実行します。
 
 ## 利用上の注意
 
