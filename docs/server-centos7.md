@@ -27,14 +27,28 @@ curl --cacert /path/to/ca-bundle.pem \
 
 ## 2. micromambaの初期化
 
-各ユーザーが自分のhome directoryに環境とpackage cacheを持つ。
+同じサーバーの複数ユーザーで使用する場合、動作確認済みのmicromamba binaryとCA bundleを共通の読み取り専用directoryへ配置できる。
 
 ```bash
+SHARED_RUNTIME=/shared/path/to/thickness-measurement/runtime
+
+MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
+SHARED_CA="$SHARED_RUNTIME/certs/ca-certificates-2026.5.20.pem"
+
 export MAMBA_ROOT_PREFIX="$HOME/micromamba"
-eval "$("$HOME/bin/micromamba" shell hook --shell zsh)"
+
+"$MAMBA_EXE" config set ssl_verify "$SHARED_CA"
+eval "$("$MAMBA_EXE" shell hook --shell zsh)"
 ```
 
-必要であれば上記2行を `~/.zshrc` に追加する。`micromamba info` の `envs directories` が自分のhome directory以下になっていることを確認する。
+micromamba 2.6系では、実行ファイルのbasenameが `micromamba` または `mamba` でなければ `run` や `activate` が正常に動作しない。version付きファイルを保持する場合は、必ず `micromamba` という名前のsymlinkを用意する。
+
+```bash
+cd "$SHARED_RUNTIME/bin"
+ln -s micromamba-2.6.2 micromamba
+```
+
+各ユーザーは自分のhome directoryに環境とpackage cacheを持つ。必要であれば初期化部分を `~/.zshrc` に追加する。`micromamba info` の `envs directories` が自分のhome directory以下になっていることを確認する。
 
 ## 3. 環境作成
 
@@ -106,7 +120,9 @@ micromamba env export \
 
 ```bash
 export MAMBA_ROOT_PREFIX="$HOME/micromamba"
-eval "$("$HOME/bin/micromamba" shell hook --shell zsh)"
+SHARED_RUNTIME=/shared/path/to/thickness-measurement/runtime
+MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
+eval "$("$MAMBA_EXE" shell hook --shell zsh)"
 
 cd "$HOME/thickness_measurement"
 micromamba create \
