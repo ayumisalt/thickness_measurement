@@ -41,11 +41,11 @@ export MAMBA_ROOT_PREFIX="$HOME/micromamba"
 eval "$("$MAMBA_EXE" shell hook --shell zsh)"
 ```
 
-micromamba 2.6系では、実行ファイルのbasenameが `micromamba` または `mamba` でなければ `run` や `activate` が正常に動作しない。version付きファイルを保持する場合は、必ず `micromamba` という名前のsymlinkを用意する。
+micromamba 2.6系では、実行ファイルのbasenameが `micromamba` または `mamba` でなければ `run` や `activate` が正常に動作しない。また、symlinkは実体のversion付きファイル名へ解決されるため使用できない。共有directoryには `micromamba` という名前のbinaryコピーを用意する。
 
 ```bash
 cd "$SHARED_RUNTIME/bin"
-ln -s micromamba-2.6.2 micromamba
+install -m 0755 micromamba-2.6.2 micromamba
 ```
 
 各ユーザーは自分のhome directoryに環境とpackage cacheを持つ。必要であれば初期化部分を `~/.zshrc` に追加する。`micromamba info` の `envs directories` が自分のhome directory以下になっていることを確認する。
