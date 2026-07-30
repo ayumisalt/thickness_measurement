@@ -309,6 +309,8 @@ Python版はSciPy、C++/ROOT版はROOT Minuitをfittingに使用するため、�
 
 CentOS 7解析サーバーでのmicromamba環境、TLS設定、lock fileによる複数ユーザー間の再現方法は [サーバー環境構築手順](docs/server-centos7.md) を参照してください。
 
+共有サーバーでsystem PythonやROOTの環境変数が設定されている場合は、`scripts/run-in-env.sh` を使用して解析環境を分離できます。
+
 ## 利用上の注意
 
 volume–range比較は、未知trackが基準試料とどの程度整合するかを評価するための指標です。出力されるz-scoreや3σ判定だけで電荷を確定するものではありません。

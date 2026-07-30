@@ -57,33 +57,43 @@ install -m 0755 micromamba-2.6.2 micromamba
 ```bash
 cd "$HOME/thickness_measurement"
 
-micromamba create \
+"$MAMBA_EXE" \
+  --root-prefix "$MAMBA_ROOT_PREFIX" \
+  create \
   --file environment-server.yml
+```
 
-micromamba activate thickness-measurement
+サーバー共通の `PYTHONPATH` や `ROOTSYS` が設定されている場合、activateしただけではsystem packageが混入する可能性がある。以降のテスト、build、解析には `scripts/run-in-env.sh` を使用する。
+
+各shellで共有micromambaの場所を指定する。
+
+```bash
+export THICKNESS_MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
+export MAMBA_ROOT_PREFIX="$HOME/micromamba"
 ```
 
 作成後の確認:
 
 ```bash
-python --version
-python -c 'import numpy, scipy, cv2, matplotlib; print(
+scripts/run-in-env.sh python --version
+scripts/run-in-env.sh python -c \
+  'import numpy, scipy, cv2, matplotlib; print(
     "numpy", numpy.__version__,
     "scipy", scipy.__version__,
     "opencv", cv2.__version__,
     "matplotlib", matplotlib.__version__
-)'
-root-config --version
-root-config --cflags
-cmake --version | head -n 1
-c++ --version | head -n 1
+  )'
+scripts/run-in-env.sh root-config --version
+scripts/run-in-env.sh root-config --cflags
+scripts/run-in-env.sh cmake --version
+scripts/run-in-env.sh c++ --version
 ```
 
 ## 4. Python版のテスト
 
 ```bash
 cd "$HOME/thickness_measurement"
-python -m pytest
+scripts/run-in-env.sh python -m pytest
 ```
 
 ## 5. C++/ROOT版のビルド
@@ -93,11 +103,13 @@ ROOT 6.40のconda-forge buildはC++20を使用する。プロジェクトのCMak
 ```bash
 cd "$HOME/thickness_measurement"
 
-cmake -S . -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+ENV_PREFIX="$MAMBA_ROOT_PREFIX/envs/thickness-measurement"
 
-cmake --build build
+scripts/run-in-env.sh cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$ENV_PREFIX"
+
+scripts/run-in-env.sh cmake --build build
 ```
 
 設定時に次のような表示が出ることを確認する。
@@ -111,7 +123,9 @@ cmake --build build
 最初の環境作成とテストが成功した後、間接依存を含むpackage URLを固定する。
 
 ```bash
-micromamba env export \
+"$MAMBA_EXE" \
+  --root-prefix "$MAMBA_ROOT_PREFIX" \
+  env export \
   --name thickness-measurement \
   --explicit > environment-linux-64.lock
 ```
@@ -125,19 +139,28 @@ MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
 eval "$("$MAMBA_EXE" shell hook --shell zsh)"
 
 cd "$HOME/thickness_measurement"
-micromamba create \
+"$MAMBA_EXE" \
+  --root-prefix "$MAMBA_ROOT_PREFIX" \
+  create \
   --name thickness-measurement \
   --file environment-linux-64.lock
 ```
 
 ## 7. 環境を有効化しない実行方法
 
-batch処理やcronではshell初期化への依存を避けるため、`micromamba run` を利用できる。
+batch処理やcronでも同じwrapperを使用する。wrapperは次のsite-wide環境変数を除外する。
+
+- `PYTHONPATH`, `PYTHONHOME`
+- `ROOTSYS`
+- compiler include/library検索path
+- `CMAKE_PREFIX_PATH`, `PKG_CONFIG_PATH`
+- `LD_LIBRARY_PATH`
 
 ```bash
-micromamba run --name thickness-measurement \
-  python track_thickness.py --help
+export THICKNESS_MAMBA_EXE="$SHARED_RUNTIME/bin/micromamba"
+export MAMBA_ROOT_PREFIX="$HOME/micromamba"
 
-micromamba run --name thickness-measurement \
-  ./build/track_volume_root --help
+scripts/run-in-env.sh python track_thickness.py --help
+
+scripts/run-in-env.sh ./build/track_volume_root --help
 ```
