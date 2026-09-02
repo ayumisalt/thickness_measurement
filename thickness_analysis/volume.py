@@ -18,7 +18,7 @@ class VolumeRecord:
 
 
 def calculate_volumes(
-    records: Iterable[ThicknessRecord], maximum_width_nm: float = 800.0
+    records: Iterable[ThicknessRecord], maximum_width_nm: float | None = None
 ) -> list[VolumeRecord]:
     grouped: dict[int, list[ThicknessRecord]] = {}
     for row in records:
@@ -34,7 +34,16 @@ def calculate_volumes(
             if interval_um < 0:
                 raise ValueError(f"track {track_id} distances are not monotonic")
             previous_distance = row.distance_um
-            if not (0.0 < row.width_nm <= maximum_width_nm):
+            if (
+                not math.isfinite(row.width_nm)
+                or row.width_nm <= 0.0
+            ):
+                continue
+
+            if (
+                maximum_width_nm is not None
+                and row.width_nm > maximum_width_nm
+            ):
                 continue
             radius_um = row.width_nm / 2000.0
             volume += math.pi * radius_um**2 * interval_um
@@ -57,7 +66,7 @@ def write_volume_records(path: str | Path, records: Iterable[VolumeRecord]) -> N
 def run_volume(
     input_path: str | Path,
     output_path: str | Path,
-    maximum_width_nm: float = 800.0,
+    maximum_width_nm: float | None = None,
 ) -> tuple[int, int]:
     source = read_thickness_records(input_path)
     result = calculate_volumes(source, maximum_width_nm)

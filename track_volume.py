@@ -20,8 +20,11 @@ def main() -> int:
     parser.add_argument(
         "--maximum-width-nm",
         type=float,
-        default=800.0,
-        help="reject wider fits (default: 800)",
+        default=None,
+        help=(
+            "optionally reject wider fits; "
+            "disabled by default"
+        ),
     )
     args = parser.parse_args()
     input_rows, output_rows = run_volume(

@@ -160,6 +160,15 @@ class ThicknessRecord:
     width_nm: float
     sigma_nm: float
 
+    # Fit-quality diagnostics
+    contrast: float = float("nan")
+    fit_r2: float = float("nan")
+    fit_nrmse: float = float("nan")
+    reduced_chi2: float = float("nan")
+    fit_p_value: float = float("nan")
+    width_error_nm: float = float("nan")
+    width_relative_error: float = float("nan")
+
 
 def read_thickness_records(path: str | Path) -> list[ThicknessRecord]:
     records: list[ThicknessRecord] = []
@@ -170,10 +179,17 @@ def read_thickness_records(path: str | Path) -> list[ThicknessRecord]:
             if not stripped or stripped.startswith("#"):
                 continue
             fields = stripped.split()
+
             if len(fields) < 5:
                 raise ValueError(
                     f"{input_path}:{line_number}: expected at least five columns"
                 )
+
+            def optional_float(index: int) -> float:
+                if len(fields) <= index:
+                    return float("nan")
+                return float(fields[index])
+
             try:
                 records.append(
                     ThicknessRecord(
@@ -182,10 +198,19 @@ def read_thickness_records(path: str | Path) -> list[ThicknessRecord]:
                         resolution_nm=float(fields[2]),
                         width_nm=float(fields[3]),
                         sigma_nm=float(fields[4]),
+                        contrast=optional_float(5),
+                        fit_r2=optional_float(6),
+                        fit_nrmse=optional_float(7),
+                        reduced_chi2=optional_float(8),
+                        fit_p_value=optional_float(9),
+                        width_error_nm=optional_float(10),
+                        width_relative_error=optional_float(11),
                     )
                 )
             except ValueError as exc:
-                raise ValueError(f"{input_path}:{line_number}: {exc}") from exc
+                raise ValueError(
+                    f"{input_path}:{line_number}: {exc}"
+                ) from exc
     return records
 
 
@@ -197,12 +222,26 @@ def write_thickness_records(
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as stream:
-        stream.write("# columns: track_id distance_um resolution_nm width_nm sigma_nm\n")
+        stream.write(
+            "# columns: "
+            "track_id distance_um resolution_nm width_nm sigma_nm "
+            "contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value "
+            "width_error_nm width_relative_error\n"
+        )
         for comment in comments:
             stream.write(f"# {comment}\n")
         for row in records:
             stream.write(
-                f"{row.track_id} {row.distance_um:.6f} "
-                f"{row.resolution_nm:.6f} {row.width_nm:.6f} "
-                f"{row.sigma_nm:.6f}\n"
+                f"{row.track_id} "
+                f"{row.distance_um:.6f} "
+                f"{row.resolution_nm:.6f} "
+                f"{row.width_nm:.6f} "
+                f"{row.sigma_nm:.6f} "
+                f"{row.contrast:.6f} "
+                f"{row.fit_r2:.9f} "
+                f"{row.fit_nrmse:.9f} "
+                f"{row.reduced_chi2:.9f} "
+                f"{row.fit_p_value:.9g} "
+                f"{row.width_error_nm:.6f} "
+                f"{row.width_relative_error:.9f}\n"
             )

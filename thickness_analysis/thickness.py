@@ -11,6 +11,7 @@ from typing import Iterable
 import cv2
 import numpy as np
 from scipy.optimize import brentq, curve_fit
+from scipy.stats import chi2
 
 from .io import ImageStack, ThicknessRecord, Track
 
@@ -25,6 +26,20 @@ class ThicknessConfig:
     gaussian_kernel_px: int = 101
     minimum_contrast: float = 50.0
 
+@dataclass(frozen=True)
+class ProfileFit:
+    resolution_nm: float
+    width_nm: float
+    sigma_nm: float
+
+    contrast: float
+    fit_r2: float
+    fit_nrmse: float
+    reduced_chi2: float
+    fit_p_value: float
+
+    width_error_nm: float
+    width_relative_error: float
 
 def tanh_gaussian(
     x_nm: np.ndarray,
@@ -62,18 +77,97 @@ def inflection_width_nm(saturation: float, sigma_nm: float) -> float:
     root = brentq(equation, 0.0, upper)
     return 2.0 * root
 
+def _width_uncertainty_nm(
+    params: np.ndarray,
+    pcov: np.ndarray,
+) -> float:
+
+    saturation = float(params[0])
+    sigma_nm = float(params[2])
+
+    # We need covariance for saturation and sigma.
+    cov = pcov[np.ix_([0, 2], [0, 2])]
+
+    if not np.all(np.isfinite(cov)):
+        return float("inf")
+
+    # Numerical derivatives of width(saturation, sigma).
+    ds = max(abs(saturation) * 1e-5, 1e-6)
+    d_sigma = max(abs(sigma_nm) * 1e-5, 1e-3)
+
+    try:
+        dw_ds = (
+            inflection_width_nm(
+                saturation + ds,
+                sigma_nm,
+            )
+            - inflection_width_nm(
+                saturation - ds,
+                sigma_nm,
+            )
+        ) / (2.0 * ds)
+
+        dw_dsigma = (
+            inflection_width_nm(
+                saturation,
+                sigma_nm + d_sigma,
+            )
+            - inflection_width_nm(
+                saturation,
+                sigma_nm - d_sigma,
+            )
+        ) / (2.0 * d_sigma)
+
+    except (ValueError, OverflowError):
+        return float("inf")
+
+    gradient = np.array(
+        [dw_ds, dw_dsigma],
+        dtype=float,
+    )
+
+    variance = float(
+        gradient @ cov @ gradient
+    )
+
+    if not np.isfinite(variance) or variance < 0:
+        return float("inf")
+
+    return math.sqrt(variance)
 
 def _fit_profile(
-    coordinates_nm: np.ndarray, brightness: np.ndarray
-) -> tuple[float, float, float] | None:
+    coordinates_nm: np.ndarray,
+    brightness: np.ndarray,
+) -> ProfileFit | None:
+
     contrast = float(np.ptp(brightness))
+
     if not np.isfinite(contrast) or contrast <= 0:
         return None
-    center_guess = float(coordinates_nm[int(np.argmax(brightness))])
-    p0 = [1.0, center_guess, 200.0, max(float(np.max(brightness)), 1.0)]
-    half_range = float(max(abs(coordinates_nm[0]), abs(coordinates_nm[-1])))
+
+    center_guess = float(
+        coordinates_nm[int(np.argmax(brightness))]
+    )
+
+    p0 = [
+        1.0,
+        center_guess,
+        200.0,
+        max(float(np.max(brightness)), 1.0),
+    ]
+
+    half_range = float(
+        max(
+            abs(coordinates_nm[0]),
+            abs(coordinates_nm[-1]),
+        )
+    )
+
+    # Existing assumption used by curve_fit.
+    noise_sigma = 20.0
+
     try:
-        params, _ = curve_fit(
+        params, pcov = curve_fit(
             tanh_gaussian,
             coordinates_nm,
             brightness,
@@ -82,17 +176,138 @@ def _fit_profile(
                 [0.01, -half_range, 10.0, 0.1],
                 [10.0, half_range, 2000.0, 1000.0],
             ),
-            sigma=np.full_like(brightness, 20.0, dtype=float),
+            sigma=np.full_like(
+                brightness,
+                noise_sigma,
+                dtype=float,
+            ),
             absolute_sigma=True,
             maxfev=20_000,
         )
-        saturation, _, sigma_nm, _ = map(float, params)
-        return (
-            edge_resolution_nm(saturation, sigma_nm),
-            inflection_width_nm(saturation, sigma_nm),
+
+        saturation, _, sigma_nm, _ = map(
+            float,
+            params,
+        )
+
+        resolution_nm = edge_resolution_nm(
+            saturation,
             sigma_nm,
         )
-    except (RuntimeError, ValueError, OverflowError):
+
+        width_nm = inflection_width_nm(
+            saturation,
+            sigma_nm,
+        )
+
+        fitted = tanh_gaussian(
+            coordinates_nm,
+            *params,
+        )
+
+        residuals = brightness - fitted
+
+        # -------------------------------------------------
+        # RMSE / normalized RMSE
+        # -------------------------------------------------
+        rmse = float(
+            np.sqrt(
+                np.mean(residuals**2)
+            )
+        )
+
+        fit_nrmse = (
+            rmse / contrast
+            if contrast > 0
+            else float("inf")
+        )
+
+        # -------------------------------------------------
+        # R^2
+        # -------------------------------------------------
+        ss_res = float(
+            np.sum(residuals**2)
+        )
+
+        ss_tot = float(
+            np.sum(
+                (
+                    brightness
+                    - np.mean(brightness)
+                ) ** 2
+            )
+        )
+
+        fit_r2 = (
+            1.0 - ss_res / ss_tot
+            if ss_tot > 0
+            else float("nan")
+        )
+
+        # -------------------------------------------------
+        # chi-square
+        #
+        # NOTE:
+        # This assumes sigma=20 is a real measurement
+        # uncertainty. Therefore p-value is diagnostic only.
+        # -------------------------------------------------
+        chi2_value = float(
+            np.sum(
+                (residuals / noise_sigma) ** 2
+            )
+        )
+
+        dof = len(brightness) - len(params)
+
+        if dof > 0:
+            reduced_chi2 = chi2_value / dof
+            fit_p_value = float(
+                chi2.sf(
+                    chi2_value,
+                    dof,
+                )
+            )
+        else:
+            reduced_chi2 = float("nan")
+            fit_p_value = float("nan")
+
+        # -------------------------------------------------
+        # Width uncertainty propagated from curve_fit
+        # covariance.
+        # -------------------------------------------------
+        width_error_nm = _width_uncertainty_nm(
+            params,
+            pcov,
+        )
+
+        if (
+            width_nm > 0
+            and np.isfinite(width_error_nm)
+        ):
+            width_relative_error = (
+                width_error_nm / width_nm
+            )
+        else:
+            width_relative_error = float("inf")
+
+        return ProfileFit(
+            resolution_nm=resolution_nm,
+            width_nm=width_nm,
+            sigma_nm=sigma_nm,
+            contrast=contrast,
+            fit_r2=fit_r2,
+            fit_nrmse=fit_nrmse,
+            reduced_chi2=reduced_chi2,
+            fit_p_value=fit_p_value,
+            width_error_nm=width_error_nm,
+            width_relative_error=width_relative_error,
+        )
+
+    except (
+        RuntimeError,
+        ValueError,
+        OverflowError,
+    ):
         return None
 
 
@@ -321,14 +536,23 @@ def measure_track(
         fit = _fit_profile(coordinates_nm, brightness)
         if fit is None:
             continue
-        resolution_nm, width_nm, sigma_nm = fit
+        # resolution_nm, width_nm, sigma_nm = fit
         records.append(
             ThicknessRecord(
                 track_id=track.track_id,
                 distance_um=float(distance_um),
-                resolution_nm=resolution_nm,
-                width_nm=width_nm,
-                sigma_nm=sigma_nm,
+
+                resolution_nm=fit.resolution_nm,
+                width_nm=fit.width_nm,
+                sigma_nm=fit.sigma_nm,
+
+                contrast=fit.contrast,
+                fit_r2=fit.fit_r2,
+                fit_nrmse=fit.fit_nrmse,
+                reduced_chi2=fit.reduced_chi2,
+                fit_p_value=fit.fit_p_value,
+                width_error_nm=fit.width_error_nm,
+                width_relative_error=fit.width_relative_error,
             )
         )
     return records

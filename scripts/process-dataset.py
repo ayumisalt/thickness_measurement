@@ -51,6 +51,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--minimum-contrast",
+        type=float,
+        default=50.0,
+        help=(
+            "minimum transverse-profile contrast "
+            "used before fitting (default: 50)"
+        ),
+    )
+    parser.add_argument(
         "--results-dir",
         default="results/dataset",
         help="directory for combined results and plots",
@@ -63,8 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--maximum-width-nm",
         type=float,
-        default=800.0,
-        help="maximum accepted fitted width during volume integration",
+        default=None,
+        help=(
+            "optional maximum fitted width used for volume integration; "
+            "disabled by default"
+        ),
     )
     parser.add_argument(
         "--skip-thickness",
@@ -179,7 +191,14 @@ def main() -> int:
         if not args.skip_thickness:
             run(
                 thickness_program
-                + [str(image_json), str(track_file), "-o", str(output)],
+                + [
+                    str(image_json),
+                    str(track_file),
+                    "-o",
+                    str(output),
+                    "--minimum-contrast",
+                    str(args.minimum_contrast),
+                ],
                 args.dry_run,
             )
         thickness_outputs.append(output)
@@ -194,15 +213,21 @@ def main() -> int:
         + ["-o", str(combined)],
         args.dry_run,
     )
-    run(
-        volume_program
-        + [
-            str(combined),
-            "-o",
-            str(volume),
+    volume_command = [
+        *volume_program,
+        str(combined),
+        "-o",
+        str(volume),
+    ]
+
+    if args.maximum_width_nm is not None:
+        volume_command += [
             "--maximum-width-nm",
             str(args.maximum_width_nm),
-        ],
+        ]
+
+    run(
+        volume_command,
         args.dry_run,
     )
     run(plot_program + [str(volume), "-o", str(plot)], args.dry_run)

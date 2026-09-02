@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .io import ThicknessRecord, read_thickness_records, write_thickness_records
-
+from dataclasses import replace
 
 def resolve_inputs(specifications: Iterable[str]) -> list[Path]:
     resolved: list[Path] = []
@@ -45,12 +45,9 @@ def combine_results(
                 next_track_id += 1
             source_map.append(f"source_map: {global_id} <- {input_path} track {local_id}")
         combined.extend(
-            ThicknessRecord(
+            replace(
+                row,
                 track_id=mapping[row.track_id],
-                distance_um=row.distance_um,
-                resolution_nm=row.resolution_nm,
-                width_nm=row.width_nm,
-                sigma_nm=row.sigma_nm,
             )
             for row in records
         )
