@@ -178,39 +178,117 @@ def _sample_profile(
 
 
 def measure_track(
-    stack: ImageStack, track: Track, config: ThicknessConfig = ThicknessConfig()
+    stack: ImageStack,
+    track: Track,
+    config: ThicknessConfig = ThicknessConfig(),
 ) -> list[ThicknessRecord]:
+
     start, end = track.endpoints
-    start_stage = np.array([start.x_mm, start.y_mm], dtype=float)
-    end_stage = np.array([end.x_mm, end.y_mm], dtype=float)
-    delta_stage = end_stage - start_stage
-    length_mm = float(np.linalg.norm(delta_stage))
-    length_um = length_mm * 1000.0
-    if length_um <= 2.0 * config.endpoint_margin_um:
+
+    # ---------------------------------------------------------
+    # XY geometry: used for locating the track in microscope images
+    # ---------------------------------------------------------
+    start_stage = np.array(
+        [start.x_mm, start.y_mm],
+        dtype=float,
+    )
+    end_stage = np.array(
+        [end.x_mm, end.y_mm],
+        dtype=float,
+    )
+
+    delta_xy_mm = end_stage - start_stage
+    length_xy_mm = float(np.linalg.norm(delta_xy_mm))
+
+    if length_xy_mm <= 0:
         raise ValueError(
-            f"track {track.track_id} is only {length_um:.3f} um long; "
+            f"track {track.track_id} has zero XY projected length"
+        )
+
+    # Unit vector perpendicular to the XY projection of the track.
+    # Thickness profile is still measured in the microscope XY image.
+    direction_xy = delta_xy_mm / length_xy_mm
+    perpendicular = np.array(
+        [-direction_xy[1], direction_xy[0]],
+        dtype=float,
+    )
+
+    # ---------------------------------------------------------
+    # 3D geometry: used for physical range / sampling distance
+    # ---------------------------------------------------------
+    delta_z_mm = end.z_mm - start.z_mm
+
+    length_3d_mm = math.sqrt(
+        length_xy_mm**2 + delta_z_mm**2
+    )
+    length_3d_um = length_3d_mm * 1000.0
+
+    if length_3d_um <= 2.0 * config.endpoint_margin_um:
+        raise ValueError(
+            f"track {track.track_id} is only "
+            f"{length_3d_um:.3f} um long in 3D; "
             "reduce endpoint margin"
         )
-    direction = delta_stage / length_mm
-    perpendicular = np.array([-direction[1], direction[0]])
+
+    # Useful diagnostic information
+    correction_factor = length_3d_mm / length_xy_mm
+    angle_deg = math.degrees(
+        math.atan2(abs(delta_z_mm), length_xy_mm)
+    )
+
+    # ---------------------------------------------------------
+    # Image cache
+    # ---------------------------------------------------------
     start_px = stack.stage_to_pixel(*start_stage)
     end_px = stack.stage_to_pixel(*end_stage)
-    cache = _TrackImageCache(stack, start_px, end_px, config)
-    z_values = np.array([frame.z_mm for frame in stack.frames])
 
+    cache = _TrackImageCache(
+        stack,
+        start_px,
+        end_px,
+        config,
+    )
+
+    z_values = np.array(
+        [frame.z_mm for frame in stack.frames]
+    )
+
+    # ---------------------------------------------------------
+    # Sampling is now defined along the TRUE 3D track length.
+    #
+    # spacing_um = 1 means 1 um intervals in physical 3D space.
+    # endpoint_margin_um = 2 means 2 um from each physical endpoint.
+    # ---------------------------------------------------------
     distances = np.arange(
         config.endpoint_margin_um,
-        length_um - config.endpoint_margin_um + 1e-9,
+        length_3d_um - config.endpoint_margin_um + 1e-9,
         config.spacing_um,
     )
+
     records: list[ThicknessRecord] = []
+
     for distance_um in distances:
-        fraction = distance_um / length_um
-        point_stage = start_stage + fraction * delta_stage
+
+        # Fraction along the physical 3D track
+        fraction = distance_um / length_3d_um
+
+        # XY position corresponding to this 3D position
+        point_stage = (
+            start_stage + fraction * delta_xy_mm
+        )
+
         point_px = stack.stage_to_pixel(*point_stage)
         local_px = cache.local_point(point_px)
-        predicted_z = start.z_mm + fraction * (end.z_mm - start.z_mm)
-        center_index = int(np.argmin(np.abs(z_values - predicted_z)))
+
+        # Z position corresponding to the same physical position
+        predicted_z = (
+            start.z_mm
+            + fraction * delta_z_mm
+        )
+
+        center_index = int(
+            np.argmin(np.abs(z_values - predicted_z))
+        )
         lo = max(0, center_index - config.focus_search_frames)
         hi = min(len(stack.frames), center_index + config.focus_search_frames + 1)
 
