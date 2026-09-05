@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import argparse
 
+from thickness_analysis.quality_cli import (
+    add_quality_cut_arguments,
+    quality_cuts_from_args,
+)
 from thickness_analysis.visualize import create_volume_range_plot
 
 
@@ -18,6 +22,12 @@ def main() -> int:
     )
     parser.add_argument("-o", "--output", required=True, help="output PNG/PDF")
     parser.add_argument(
+        "--input-type",
+        choices=("volume", "thickness"),
+        default="volume",
+        help="read precomputed volume data or thickness data (default: volume)",
+    )
+    parser.add_argument(
         "--scores-output",
         help="optional CSV with per-track slope comparison scores",
     )
@@ -26,7 +36,17 @@ def main() -> int:
     parser.add_argument("--maximum-volume-um3", type=float, default=5.0)
     parser.add_argument("--x-limit-um", type=float, default=50.0)
     parser.add_argument("--y-limit-um3", type=float, default=10.0)
+    parser.add_argument(
+        "--minimum-reference-tracks-per-bin",
+        type=int,
+        default=1,
+        help="omit reference bins with fewer unique tracks (default: 1)",
+    )
+    add_quality_cut_arguments(parser)
     args = parser.parse_args()
+    cuts = quality_cuts_from_args(parser, args)
+    if args.input_type != "thickness" and cuts.requested:
+        parser.error("fit-quality cuts require --input-type thickness")
     fit = create_volume_range_plot(
         reference_path=args.reference,
         candidate_path=args.candidate,
@@ -37,6 +57,9 @@ def main() -> int:
         maximum_volume_um3=args.maximum_volume_um3,
         x_limit_um=args.x_limit_um,
         y_limit_um3=args.y_limit_um3,
+        input_type=args.input_type,
+        quality_cuts=cuts,
+        minimum_reference_tracks_per_bin=args.minimum_reference_tracks_per_bin,
     )
     print(
         f"Wrote {args.output}; reference slope = "

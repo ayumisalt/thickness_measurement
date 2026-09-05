@@ -13,8 +13,8 @@ from thickness_analysis.thickness import ThicknessConfig, measure_tracks
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Measure track thickness. For a multi-point track, the first and last "
-            "points are used as the endpoints."
+            "Measure track thickness. Multi-point tracks are treated as 3D "
+            "polylines with profiles perpendicular to the local XY segment."
         )
     )
     parser.add_argument("image_json", help="microscope image-stack metadata JSON")
@@ -73,7 +73,8 @@ def main() -> int:
             f"image_json: {stack.json_path}",
             f"tracks: {Path(args.tracks).expanduser().resolve()}",
             f"input_shrink: {shrink:g}",
-            "multi-point policy: first and last point are endpoints",
+            "multi-point policy: 3D polyline with local transverse profiles",
+            "fit noise model: neighboring-profile tails (MAD/clipped RMS)",
         ],
     )
     measured = len({row.track_id for row in records})

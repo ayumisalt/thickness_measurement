@@ -1,13 +1,16 @@
 #include "analysis_io.hpp"
 
 #include <TF1.h>
+#include <TFitResult.h>
 #include <TFitResultPtr.h>
-#include <TGraph.h>
+#include <TGraphErrors.h>
+#include <Math/ProbFuncMathCore.h>
 
 #include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -15,6 +18,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <regex>
 #include <set>
@@ -33,6 +37,91 @@ struct Point {
 struct Track {
   int id{};
   std::vector<Point> points;
+};
+
+struct PolylineSample {
+  Point point;
+  cv::Point2d direction_xy;
+};
+
+class Polyline {
+public:
+  explicit Polyline(const Track &track) {
+    for (const auto &point : track.points) {
+      if (points_.empty() || distance_um(points_.back(), point) > 1e-12)
+        points_.push_back(point);
+    }
+    if (points_.size() < 2)
+      throw std::runtime_error("track " + std::to_string(track.id) +
+                               " has zero 3D length");
+    cumulative_um_.push_back(0.0);
+    for (std::size_t i = 0; i + 1 < points_.size(); ++i) {
+      segment_lengths_um_.push_back(distance_um(points_[i], points_[i + 1]));
+      cumulative_um_.push_back(cumulative_um_.back() +
+                               segment_lengths_um_.back());
+    }
+  }
+
+  double length_um() const { return cumulative_um_.back(); }
+  const std::vector<Point> &points() const { return points_; }
+
+  PolylineSample sample(double distance) const {
+    const auto upper = std::lower_bound(cumulative_um_.begin() + 1,
+                                        cumulative_um_.end(), distance);
+    const std::size_t segment = std::min<std::size_t>(
+        std::distance(cumulative_um_.begin() + 1, upper),
+        segment_lengths_um_.size() - 1);
+    const Point &start = points_[segment];
+    const Point &end = points_[segment + 1];
+    const double fraction =
+        (distance - cumulative_um_[segment]) / segment_lengths_um_[segment];
+    Point point{start.x + fraction * (end.x - start.x),
+                start.y + fraction * (end.y - start.y),
+                start.z + fraction * (end.z - start.z)};
+
+    std::size_t direction_segment = segment;
+    double dx = end.x - start.x;
+    double dy = end.y - start.y;
+    if (std::hypot(dx, dy) <= 1e-15) {
+      bool found = false;
+      for (std::size_t offset = 1; offset < points_.size(); ++offset) {
+        for (const long candidate_signed :
+             {static_cast<long>(segment) - static_cast<long>(offset),
+              static_cast<long>(segment) + static_cast<long>(offset)}) {
+          if (candidate_signed < 0 ||
+              candidate_signed >= static_cast<long>(segment_lengths_um_.size()))
+            continue;
+          const auto candidate = static_cast<std::size_t>(candidate_signed);
+          dx = points_[candidate + 1].x - points_[candidate].x;
+          dy = points_[candidate + 1].y - points_[candidate].y;
+          if (std::hypot(dx, dy) > 1e-15) {
+            direction_segment = candidate;
+            found = true;
+            break;
+          }
+        }
+        if (found)
+          break;
+      }
+      if (!found)
+        throw std::runtime_error("track has no measurable XY projection");
+      dx = points_[direction_segment + 1].x - points_[direction_segment].x;
+      dy = points_[direction_segment + 1].y - points_[direction_segment].y;
+    }
+    const double xy_length = std::hypot(dx, dy);
+    return {point, {dx / xy_length, dy / xy_length}};
+  }
+
+private:
+  static double distance_um(const Point &left, const Point &right) {
+    return 1000.0 * std::sqrt(std::pow(right.x - left.x, 2) +
+                              std::pow(right.y - left.y, 2) +
+                              std::pow(right.z - left.z, 2));
+  }
+
+  std::vector<Point> points_;
+  std::vector<double> segment_lengths_um_;
+  std::vector<double> cumulative_um_;
 };
 
 struct Frame {
@@ -159,7 +248,7 @@ load_tracks(const fs::path &path, const std::optional<double> &shrink_override) 
 
 class ImageCache {
 public:
-  ImageCache(const Stack &stack, cv::Point2d start, cv::Point2d end,
+  ImageCache(const Stack &stack, const std::vector<cv::Point2d> &track_points,
              const Config &config)
       : stack_(stack), kernel_(config.gaussian_kernel_px) {
     const int gaussian_radius = kernel_ / 2;
@@ -167,18 +256,24 @@ public:
         std::max(config.profile_half_width_um / stack.pixel_size_um(),
                  static_cast<double>(config.focus_window_px)) +
         gaussian_radius + 4));
-    x0_ = std::max(0, static_cast<int>(std::floor(std::min(start.x, end.x))) -
-                          margin);
-    y0_ = std::max(0, static_cast<int>(std::floor(std::min(start.y, end.y))) -
-                          margin);
+    const auto [minimum_x, maximum_x] =
+        std::minmax_element(track_points.begin(), track_points.end(),
+                            [](const auto &left, const auto &right) {
+                              return left.x < right.x;
+                            });
+    const auto [minimum_y, maximum_y] =
+        std::minmax_element(track_points.begin(), track_points.end(),
+                            [](const auto &left, const auto &right) {
+                              return left.y < right.y;
+                            });
+    x0_ = std::max(0, static_cast<int>(std::floor(minimum_x->x)) - margin);
+    y0_ = std::max(0, static_cast<int>(std::floor(minimum_y->y)) - margin);
     const int x1 =
-        std::min(stack.width,
-                 static_cast<int>(std::ceil(std::max(start.x, end.x))) +
-                     margin + 1);
+        std::min(stack.width, static_cast<int>(std::ceil(maximum_x->x)) +
+                                  margin + 1);
     const int y1 =
-        std::min(stack.height,
-                 static_cast<int>(std::ceil(std::max(start.y, end.y))) +
-                     margin + 1);
+        std::min(stack.height, static_cast<int>(std::ceil(maximum_y->y)) +
+                                   margin + 1);
     roi_ = {x0_, y0_, x1 - x0_, y1 - y0_};
   }
 
@@ -256,18 +351,62 @@ double inflection_width(double saturation, double sigma) {
   return low + high;
 }
 
-std::optional<std::array<double, 3>>
+double median(std::vector<double> values) {
+  if (values.empty())
+    return std::numeric_limits<double>::quiet_NaN();
+  const auto middle = values.begin() + values.size() / 2;
+  std::nth_element(values.begin(), middle, values.end());
+  if (values.size() % 2)
+    return *middle;
+  const double upper = *middle;
+  return (upper + *std::max_element(values.begin(), middle)) / 2.0;
+}
+
+double estimate_noise_sigma(const std::vector<double> &samples) {
+  const double center = median(samples);
+  std::vector<double> deviations;
+  deviations.reserve(samples.size());
+  double sum_squares = 0.0;
+  for (const double value : samples) {
+    deviations.push_back(std::abs(value - center));
+    sum_squares += std::pow(value - center, 2);
+  }
+  const double mad_sigma = 1.4826 * median(deviations);
+  const double clipped_rms_sigma =
+      std::sqrt(2.0 * sum_squares / samples.size());
+  return std::max({mad_sigma, clipped_rms_sigma, 1.0});
+}
+
+struct ProfileFit {
+  double resolution_nm{};
+  double width_nm{};
+  double sigma_nm{};
+  double contrast{};
+  double fit_r2{};
+  double fit_nrmse{};
+  double reduced_chi2{};
+  double fit_p_value{};
+  double width_error_nm{};
+  double width_relative_error{};
+  double noise_sigma{};
+};
+
+std::optional<ProfileFit>
 fit_profile(const std::vector<double> &coordinates,
-            const std::vector<double> &brightness) {
+            const std::vector<double> &brightness,
+            const std::vector<double> &background_samples) {
   const auto [minimum, maximum] =
       std::minmax_element(brightness.begin(), brightness.end());
-  if (*maximum - *minimum <= 0)
+  const double contrast = *maximum - *minimum;
+  if (contrast <= 0)
     return std::nullopt;
+  const double noise_sigma = estimate_noise_sigma(background_samples);
   const auto maximum_position =
       std::distance(brightness.begin(),
                     std::max_element(brightness.begin(), brightness.end()));
-  TGraph graph(static_cast<int>(coordinates.size()), coordinates.data(),
-               brightness.data());
+  std::vector<double> errors(brightness.size(), noise_sigma);
+  TGraphErrors graph(static_cast<int>(coordinates.size()), coordinates.data(),
+                     brightness.data(), nullptr, errors.data());
   TF1 model("tanh_gaussian",
             "[3]*TMath::TanH([0]*TMath::Exp(-0.5*((x-[1])/[2])^2))",
             coordinates.front(), coordinates.back());
@@ -282,33 +421,84 @@ fit_profile(const std::vector<double> &coordinates,
     return std::nullopt;
   const double saturation = model.GetParameter(0);
   const double sigma = model.GetParameter(2);
-  return std::array<double, 3>{edge_resolution(saturation, sigma),
-                               inflection_width(saturation, sigma), sigma};
+  const double width = inflection_width(saturation, sigma);
+
+  const double mean = std::accumulate(brightness.begin(), brightness.end(), 0.0) /
+                      brightness.size();
+  double ss_res = 0.0;
+  double ss_tot = 0.0;
+  double chi2_value = 0.0;
+  for (std::size_t i = 0; i < brightness.size(); ++i) {
+    const double residual = brightness[i] - model.Eval(coordinates[i]);
+    ss_res += residual * residual;
+    ss_tot += std::pow(brightness[i] - mean, 2);
+    chi2_value += std::pow(residual / noise_sigma, 2);
+  }
+  const double rmse = std::sqrt(ss_res / brightness.size());
+  const double fit_r2 = ss_tot > 0.0
+                            ? 1.0 - ss_res / ss_tot
+                            : std::numeric_limits<double>::quiet_NaN();
+  const int dof = static_cast<int>(brightness.size()) - model.GetNpar();
+  const double reduced_chi2 = dof > 0
+                                  ? chi2_value / dof
+                                  : std::numeric_limits<double>::quiet_NaN();
+  const double p_value = dof > 0
+                             ? ROOT::Math::chisquared_cdf_c(chi2_value, dof)
+                             : std::numeric_limits<double>::quiet_NaN();
+
+  const double ds = std::max(std::abs(saturation) * 1e-5, 1e-6);
+  const double d_sigma = std::max(std::abs(sigma) * 1e-5, 1e-3);
+  const double dw_ds = (inflection_width(saturation + ds, sigma) -
+                        inflection_width(saturation - ds, sigma)) /
+                       (2.0 * ds);
+  const double dw_dsigma =
+      (inflection_width(saturation, sigma + d_sigma) -
+       inflection_width(saturation, sigma - d_sigma)) /
+      (2.0 * d_sigma);
+  const double width_variance =
+      dw_ds * dw_ds * result->CovMatrix(0, 0) +
+      2.0 * dw_ds * dw_dsigma * result->CovMatrix(0, 2) +
+      dw_dsigma * dw_dsigma * result->CovMatrix(2, 2);
+  const double width_error =
+      std::isfinite(width_variance) && width_variance >= 0.0
+          ? std::sqrt(width_variance)
+          : std::numeric_limits<double>::infinity();
+
+  return ProfileFit{edge_resolution(saturation, sigma),
+                    width,
+                    sigma,
+                    contrast,
+                    fit_r2,
+                    rmse / contrast,
+                    reduced_chi2,
+                    p_value,
+                    width_error,
+                    width > 0.0 && std::isfinite(width_error)
+                        ? width_error / width
+                        : std::numeric_limits<double>::infinity(),
+                    noise_sigma};
 }
 
 std::vector<ThicknessRecord>
 measure_track(const Stack &stack, const Track &track, const Config &config) {
-  const Point &start = track.points.front();
-  const Point &end = track.points.back();
-  const double dx = end.x - start.x;
-  const double dy = end.y - start.y;
-  const double length_mm = std::hypot(dx, dy);
-  const double length_um = length_mm * 1000.0;
+  const Polyline polyline(track);
+  const double length_um = polyline.length_um();
   if (length_um <= 2.0 * config.endpoint_margin_um)
     throw std::runtime_error("track " + std::to_string(track.id) +
                              " is too short for the endpoint margin");
-  const cv::Point2d direction(dx / length_mm, dy / length_mm);
-  const cv::Point2d perpendicular(-direction.y, direction.x);
-  ImageCache cache(stack, stack.stage_to_pixel(start.x, start.y),
-                   stack.stage_to_pixel(end.x, end.y), config);
+  std::vector<cv::Point2d> track_pixels;
+  for (const auto &point : polyline.points())
+    track_pixels.push_back(stack.stage_to_pixel(point.x, point.y));
+  ImageCache cache(stack, track_pixels, config);
   std::vector<ThicknessRecord> records;
 
   for (double distance = config.endpoint_margin_um;
        distance <= length_um - config.endpoint_margin_um + 1e-9;
        distance += config.spacing_um) {
-    const double fraction = distance / length_um;
-    const Point point{start.x + fraction * dx, start.y + fraction * dy,
-                      start.z + fraction * (end.z - start.z)};
+    const auto sampled_track = polyline.sample(distance);
+    const Point &point = sampled_track.point;
+    const cv::Point2d &direction = sampled_track.direction_xy;
+    const cv::Point2d perpendicular(-direction.y, direction.x);
     const cv::Point2d point_local =
         cache.local(stack.stage_to_pixel(point.x, point.y));
     int center_index = 0;
@@ -344,10 +534,19 @@ measure_track(const Stack &stack, const Track &track, const Config &config) {
 
     std::vector<double> coordinates;
     std::vector<double> brightness;
+    std::vector<double> background_samples;
     const double step_um = stack.pixel_size_um();
+    std::vector<double> offsets;
     for (double offset = -config.profile_half_width_um;
          offset <= config.profile_half_width_um + 0.5 * step_um;
-         offset += step_um) {
+         offset += step_um)
+      offsets.push_back(offset);
+    const std::size_t tail_size =
+        std::max<std::size_t>(2, static_cast<std::size_t>(
+                                     std::ceil(offsets.size() * 0.25)));
+    for (std::size_t offset_index = 0; offset_index < offsets.size();
+         ++offset_index) {
+      const double offset = offsets[offset_index];
       const cv::Point2d sample_global = stack.stage_to_pixel(
           point.x + perpendicular.x * offset / 1000.0,
           point.y + perpendicular.y * offset / 1000.0);
@@ -355,15 +554,39 @@ measure_track(const Stack &stack, const Track &track, const Config &config) {
       coordinates.push_back(offset * 1000.0);
       brightness.push_back(
           bilinear(cache.dog(best_index), sample_local.x, sample_local.y));
+      if (offset_index < tail_size || offset_index + tail_size >= offsets.size()) {
+        for (const double longitudinal : {-0.5, -0.25, 0.25, 0.5}) {
+          const cv::Point2d background_global = stack.stage_to_pixel(
+              point.x + (perpendicular.x * offset + direction.x * longitudinal) /
+                            1000.0,
+              point.y + (perpendicular.y * offset + direction.y * longitudinal) /
+                            1000.0);
+          const cv::Point2d background_local = cache.local(background_global);
+          background_samples.push_back(bilinear(cache.dog(best_index),
+                                                background_local.x,
+                                                background_local.y));
+        }
+      }
     }
     const auto [minimum, maximum] =
         std::minmax_element(brightness.begin(), brightness.end());
     if (*maximum - *minimum < config.minimum_contrast)
       continue;
-    const auto fit = fit_profile(coordinates, brightness);
+    const auto fit = fit_profile(coordinates, brightness, background_samples);
     if (fit)
-      records.push_back(
-          {track.id, distance, (*fit)[0], (*fit)[1], (*fit)[2]});
+      records.push_back({track.id,
+                         distance,
+                         fit->resolution_nm,
+                         fit->width_nm,
+                         fit->sigma_nm,
+                         fit->contrast,
+                         fit->fit_r2,
+                         fit->fit_nrmse,
+                         fit->reduced_chi2,
+                         fit->fit_p_value,
+                         fit->width_error_nm,
+                         fit->width_relative_error,
+                         fit->noise_sigma});
   }
   return records;
 }
@@ -429,7 +652,8 @@ int main(int argc, char **argv) {
         {"image_json: " + fs::absolute(json_path).string(),
          "tracks: " + fs::absolute(track_path).string(),
          "input_shrink: " + std::to_string(shrink),
-         "multi-point policy: first and last point are endpoints"});
+         "multi-point policy: 3D polyline with local transverse profiles",
+         "fit noise model: neighboring-profile tails (MAD/clipped RMS)"});
     std::set<int> measured_ids;
     for (const auto &row : records)
       measured_ids.insert(row.track_id);

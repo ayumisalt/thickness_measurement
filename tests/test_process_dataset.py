@@ -33,6 +33,12 @@ class ProcessDatasetTest(unittest.TestCase):
                     str(temporary_path / "per-area"),
                     "--results-dir",
                     str(temporary_path / "results"),
+                    "--minimum-fit-contrast",
+                    "60",
+                    "--minimum-fit-r2",
+                    "0.9",
+                    "--maximum-width-relative-error",
+                    "0.2",
                 ],
                 check=True,
                 capture_output=True,
@@ -46,6 +52,12 @@ class ProcessDatasetTest(unittest.TestCase):
             )
             self.assertIn("AREA00_alpha_0000/image.json", completed.stdout)
             self.assertNotIn("AREA00_alpha_0001/image.json ", completed.stdout)
+            self.assertIn("track_volume.py", completed.stdout)
+            self.assertIn(
+                "--minimum-contrast 60.0 --minimum-fit-r2 0.9 "
+                "--maximum-width-relative-error 0.2",
+                completed.stdout,
+            )
             self.assertFalse((temporary_path / "results").exists())
 
 

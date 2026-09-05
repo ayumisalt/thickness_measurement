@@ -6,8 +6,9 @@ Python版とC++/ROOT版を提供しています。両者は共通の入力・出
 
 ## 主な機能
 
-- 顕微鏡 z-stack から飛跡に垂直な輝度プロファイルを抽出
+- 多点trackを3D折れ線として近似し、局所方向に垂直な輝度プロファイルを抽出
 - `tanh(Gaussian)` モデルによる飛跡幅・分解能の推定
+- R²、NRMSE、χ² p-value、width不確かさなどのfit品質評価
 - 複数の撮影領域（area）から得た測定結果の統合
 - 飛跡断面を円と仮定した累積体積の計算
 - 既知試料と未知試料の volume–range 関係の比較
@@ -114,7 +115,7 @@ track_id x_mm y_mm z_mm
 event_id track_id x_mm y_mm z_mm_shrunk
 ```
 
-同じtrack IDに3点以上が記録されている場合、先頭点と末尾点を飛跡の端点として使用します。点の並び順が飛程の原点と方向を決めます。
+同じtrack IDに3点以上が記録されている場合、全点を順に結ぶ3D折れ線として使用します。測定位置は折れ線の3D累積長で決まり、横断profileはその位置のsegmentのXY射影に垂直に取得します。点の並び順が飛程の原点と方向を決めます。
 
 ## サンプルデータ
 
@@ -187,14 +188,17 @@ python track_volume.py \
   -o results/volume_unknown.txt
 ```
 
-既定では800 nmを超えるwidthを除外します。閾値は変更できます。
+既定ではwidthやfit品質によるcutを適用しません。fit品質を指定して体積を再計算する場合:
 
 ```bash
 python track_volume.py \
   results/all_track_thickness.txt \
-  -o results/volume_unknown.txt \
-  --maximum-width-nm 900
+  -o results/volume_selected.txt \
+  --minimum-fit-r2 0.90 \
+  --maximum-width-relative-error 0.20
 ```
+
+指定可能なcutは、contrast、R²、NRMSE、reduced χ²、p-value、width不確かさ、width相対不確かさ、および任意のwidth上限です。バッチ処理では、fit前のprofile選別は`--minimum-contrast`、fit後のcontrast cutは`--minimum-fit-contrast`で別々に指定します。cutで除外された内部測定点は、前後の採用点からwidthを線形補間して体積積分するため、その区間が体積ゼロとして失われることはありません。先頭・末尾側の不採用測定点は出力せず、採用点が2点未満のtrackは除外します。
 
 ### 4. Volume–rangeの可視化
 
@@ -216,12 +220,31 @@ python volume_range.py \
   --scores-output results/charge_comparison.csv
 ```
 
+fit-quality cutを可視化・有意度解析の段階で変更する場合は、volumeではなくthicknessファイルを直接入力します。画像profileのfitをやり直す必要はありません。
+
+```bash
+python volume_range.py \
+  results/reference/all_track_thickness_python.txt \
+  results/candidate/all_track_thickness_python.txt \
+  --input-type thickness \
+  --minimum-fit-r2 0.90 \
+  --maximum-width-relative-error 0.20 \
+  --minimum-reference-tracks-per-bin 10 \
+  --scores-output results/charge_comparison.csv \
+  -o results/volume_range_comparison.png
+```
+
+`--minimum-fit-p-value 0.01`のようにp-valueによるcutも追加できます。p-valueはprofile周辺の背景noise推定とモデルが妥当な場合のgoodness-of-fit指標であり、単独の採否判定ではなくR²やwidth相対不確かさと併用してください。
+
+p-value cutには、13列目に`noise_sigma`を含む現在のthickness出力が必要です。`noise_sigma`を含まない入力は、`track_thickness`から再生成してください。
+
 `--scores-output` を指定すると、未知試料の各trackについて以下をCSVへ出力します。
 
 - volume–range直線の傾き
 - 基準試料に対する傾き比
-- 基準試料からのz-score
-- 3σ範囲との整合性
+- 基準試料の傾き誤差だけを用いるreference-only z-score
+- 基準・未知試料双方の傾き誤差を用いるz-score
+- 上記の合成不確かさによる3σ範囲との整合性
 
 ## C++ / ROOT版の使い方
 
@@ -250,11 +273,17 @@ cmake --build build
 
 ./build/track_volume_root \
   results/all_track_thickness_root.txt \
-  -o results/volume_unknown_root.txt
+  -o results/volume_unknown_root.txt \
+  --minimum-fit-r2 0.90 \
+  --maximum-width-relative-error 0.20
 
 ./build/volume_range_root \
-  results/volume_alpha_reference.txt \
-  results/volume_unknown_root.txt \
+  results/reference/all_track_thickness_root.txt \
+  results/candidate/all_track_thickness_root.txt \
+  --input-type thickness \
+  --minimum-fit-r2 0.90 \
+  --maximum-width-relative-error 0.20 \
+  --minimum-reference-tracks-per-bin 10 \
   -o results/volume_range_root.pdf \
   --scores-output results/charge_comparison_root.csv
 ```
@@ -266,13 +295,21 @@ cmake --build build
 ### Thickness測定結果
 
 ```text
-# columns: track_id distance_um resolution_nm width_nm sigma_nm
+# columns: track_id distance_um resolution_nm width_nm sigma_nm contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value width_error_nm width_relative_error noise_sigma
 ```
 
 - `distance_um`: track先頭点からの距離 [µm]
 - `resolution_nm`: fitting曲線の10–90 % edge距離 [nm]
 - `width_nm`: fitting曲線の左右変曲点間隔 [nm]
 - `sigma_nm`: fittingしたGaussian成分のσ [nm]
+- `contrast`: 横断profileの最大値−最小値
+- `fit_r2`: 決定係数R²
+- `fit_nrmse`: RMSEをcontrastで規格化した値
+- `reduced_chi2`: 背景noise推定を用いたreduced χ²
+- `fit_p_value`: χ² goodness-of-fit p-value
+- `width_error_nm`: fit covarianceから伝播したwidth不確かさ [nm]
+- `width_relative_error`: `width_error_nm / width_nm`
+- `noise_sigma`: profile両端周辺から推定した画素noise
 
 ### 累積体積
 

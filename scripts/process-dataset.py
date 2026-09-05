@@ -9,6 +9,15 @@ import shlex
 import subprocess
 import sys
 
+repository_path = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(repository_path))
+
+from thickness_analysis.quality_cli import (
+    add_quality_cut_arguments,
+    quality_cut_cli_tokens,
+    quality_cuts_from_args,
+)
+
 
 def run(command: list[str], dry_run: bool) -> None:
     print("+", shlex.join(command), flush=True)
@@ -52,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--minimum-contrast",
+        dest="profile_minimum_contrast",
         type=float,
         default=50.0,
         help=(
@@ -78,6 +88,26 @@ def build_parser() -> argparse.ArgumentParser:
             "disabled by default"
         ),
     )
+    add_quality_cut_arguments(
+        parser,
+        include_minimum_contrast=False,
+        include_maximum_width=False,
+    )
+    parser.add_argument(
+        "--minimum-fit-contrast",
+        dest="minimum_contrast",
+        type=float,
+        help=(
+            "minimum fitted contrast used for volume/plot selection; "
+            "this is separate from --minimum-contrast, which skips fitting"
+        ),
+    )
+    parser.add_argument(
+        "--minimum-reference-tracks-per-bin",
+        type=int,
+        default=1,
+        help="omit reference bins with fewer unique tracks (default: 1)",
+    )
     parser.add_argument(
         "--skip-thickness",
         action="store_true",
@@ -92,7 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    cuts = quality_cuts_from_args(parser, args)
     repository = Path(__file__).resolve().parents[1]
     data_parent = Path(args.data_parent).expanduser().resolve()
     results_dir = Path(args.results_dir).expanduser()
@@ -197,7 +229,7 @@ def main() -> int:
                     "-o",
                     str(output),
                     "--minimum-contrast",
-                    str(args.minimum_contrast),
+                    str(args.profile_minimum_contrast),
                 ],
                 args.dry_run,
             )
@@ -220,17 +252,23 @@ def main() -> int:
         str(volume),
     ]
 
-    if args.maximum_width_nm is not None:
-        volume_command += [
-            "--maximum-width-nm",
-            str(args.maximum_width_nm),
-        ]
+    volume_command += quality_cut_cli_tokens(cuts)
 
     run(
         volume_command,
         args.dry_run,
     )
-    run(plot_program + [str(volume), "-o", str(plot)], args.dry_run)
+    run(
+        plot_program
+        + [
+            str(volume),
+            "-o",
+            str(plot),
+            "--minimum-reference-tracks-per-bin",
+            str(args.minimum_reference_tracks_per_bin),
+        ],
+        args.dry_run,
+    )
 
     print("\nPipeline outputs:")
     print(f"  combined thickness: {combined}")

@@ -26,6 +26,7 @@ class ThicknessConfig:
     gaussian_kernel_px: int = 101
     minimum_contrast: float = 50.0
 
+
 @dataclass(frozen=True)
 class ProfileFit:
     resolution_nm: float
@@ -40,6 +41,62 @@ class ProfileFit:
 
     width_error_nm: float
     width_relative_error: float
+    noise_sigma: float
+
+
+@dataclass(frozen=True)
+class _Polyline:
+    points_mm: np.ndarray
+    segment_vectors_mm: np.ndarray
+    segment_lengths_um: np.ndarray
+    cumulative_lengths_um: np.ndarray
+
+    @classmethod
+    def from_track(cls, track: Track) -> "_Polyline":
+        points = np.array(
+            [[point.x_mm, point.y_mm, point.z_mm] for point in track.points],
+            dtype=float,
+        )
+        vectors = np.diff(points, axis=0)
+        lengths_um = np.linalg.norm(vectors, axis=1) * 1000.0
+        nonzero = lengths_um > 1e-12
+        if not np.any(nonzero):
+            raise ValueError(f"track {track.track_id} has zero 3D length")
+
+        # Remove consecutive duplicate points without changing the polyline.
+        points = points[np.concatenate(([True], nonzero))]
+        vectors = np.diff(points, axis=0)
+        lengths_um = np.linalg.norm(vectors, axis=1) * 1000.0
+        cumulative = np.concatenate(([0.0], np.cumsum(lengths_um)))
+        return cls(points, vectors, lengths_um, cumulative)
+
+    @property
+    def length_um(self) -> float:
+        return float(self.cumulative_lengths_um[-1])
+
+    def sample(self, distance_um: float) -> tuple[np.ndarray, np.ndarray]:
+        """Return the point and local XY unit tangent at an arc distance."""
+
+        segment = int(
+            np.searchsorted(self.cumulative_lengths_um[1:], distance_um, side="left")
+        )
+        segment = min(segment, len(self.segment_lengths_um) - 1)
+        within_um = distance_um - self.cumulative_lengths_um[segment]
+        fraction = within_um / self.segment_lengths_um[segment]
+        point = self.points_mm[segment] + fraction * self.segment_vectors_mm[segment]
+
+        xy = self.segment_vectors_mm[segment, :2]
+        xy_length = float(np.linalg.norm(xy))
+        if xy_length <= 1e-15:
+            candidates = np.flatnonzero(
+                np.linalg.norm(self.segment_vectors_mm[:, :2], axis=1) > 1e-15
+            )
+            if not len(candidates):
+                raise ValueError("track has no measurable XY projection")
+            nearest = int(candidates[np.argmin(np.abs(candidates - segment))])
+            xy = self.segment_vectors_mm[nearest, :2]
+            xy_length = float(np.linalg.norm(xy))
+        return point, xy / xy_length
 
 def tanh_gaussian(
     x_nm: np.ndarray,
@@ -135,9 +192,31 @@ def _width_uncertainty_nm(
 
     return math.sqrt(variance)
 
+
+def _estimate_noise_sigma(
+    brightness: np.ndarray,
+    background_samples: np.ndarray | None = None,
+) -> float:
+    """Estimate background noise from the outer quarters of a profile."""
+
+    if background_samples is None:
+        tail_size = max(2, int(math.ceil(len(brightness) * 0.25)))
+        tails = np.concatenate((brightness[:tail_size], brightness[-tail_size:]))
+    else:
+        tails = np.asarray(background_samples, dtype=float).ravel()
+    median = float(np.median(tails))
+    centered = tails - median
+    mad_sigma = 1.4826 * float(np.median(np.abs(centered)))
+    # cv2.subtract clips negative DoG fluctuations to zero. For a clipped,
+    # zero-mean Gaussian, E[max(0, X)^2] = sigma^2 / 2.
+    clipped_rms_sigma = math.sqrt(2.0 * float(np.mean(centered**2)))
+    sigma = max(mad_sigma, clipped_rms_sigma)
+    return max(sigma, 1.0)
+
 def _fit_profile(
     coordinates_nm: np.ndarray,
     brightness: np.ndarray,
+    background_samples: np.ndarray | None = None,
 ) -> ProfileFit | None:
 
     contrast = float(np.ptp(brightness))
@@ -163,8 +242,9 @@ def _fit_profile(
         )
     )
 
-    # Existing assumption used by curve_fit.
-    noise_sigma = 20.0
+    # Estimate uncertainty from background samples rather than imposing a
+    # fixed value. This keeps chi-square probabilities data-dependent.
+    noise_sigma = _estimate_noise_sigma(brightness, background_samples)
 
     try:
         params, pcov = curve_fit(
@@ -247,9 +327,8 @@ def _fit_profile(
         # -------------------------------------------------
         # chi-square
         #
-        # NOTE:
-        # This assumes sigma=20 is a real measurement
-        # uncertainty. Therefore p-value is diagnostic only.
+        # The noise estimate comes from the profile tails, independently of
+        # the fitted residuals.
         # -------------------------------------------------
         chi2_value = float(
             np.sum(
@@ -301,6 +380,7 @@ def _fit_profile(
             fit_p_value=fit_p_value,
             width_error_nm=width_error_nm,
             width_relative_error=width_relative_error,
+            noise_sigma=noise_sigma,
         )
 
     except (
@@ -315,8 +395,7 @@ class _TrackImageCache:
     def __init__(
         self,
         stack: ImageStack,
-        start_px: np.ndarray,
-        end_px: np.ndarray,
+        track_points_px: np.ndarray,
         config: ThicknessConfig,
     ) -> None:
         pixel_um = stack.nominal_pixel_size_um
@@ -331,10 +410,16 @@ class _TrackImageCache:
                 + 4
             )
         )
-        x0 = max(0, math.floor(min(start_px[0], end_px[0])) - margin)
-        y0 = max(0, math.floor(min(start_px[1], end_px[1])) - margin)
-        x1 = min(stack.width, math.ceil(max(start_px[0], end_px[0])) + margin + 1)
-        y1 = min(stack.height, math.ceil(max(start_px[1], end_px[1])) + margin + 1)
+        x0 = max(0, math.floor(float(np.min(track_points_px[:, 0]))) - margin)
+        y0 = max(0, math.floor(float(np.min(track_points_px[:, 1]))) - margin)
+        x1 = min(
+            stack.width,
+            math.ceil(float(np.max(track_points_px[:, 0]))) + margin + 1,
+        )
+        y1 = min(
+            stack.height,
+            math.ceil(float(np.max(track_points_px[:, 1]))) + margin + 1,
+        )
         self.stack = stack
         self.x0 = x0
         self.y0 = y0
@@ -360,36 +445,55 @@ def _sample_profile(
     image: np.ndarray,
     stack: ImageStack,
     point_stage: np.ndarray,
+    direction_stage: np.ndarray,
     perpendicular_stage: np.ndarray,
     config: ThicknessConfig,
     cache: _TrackImageCache,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     step_um = stack.nominal_pixel_size_um
     offsets_um = np.arange(
         -config.transverse_half_width_um,
         config.transverse_half_width_um + 0.5 * step_um,
         step_um,
     )
-    stage_points = point_stage[:, None] + (
-        perpendicular_stage[:, None] * offsets_um[None, :] / 1000.0
+    longitudinal_offsets_um = np.linspace(-0.5, 0.5, 5)
+    stage_points = (
+        point_stage[:, None, None]
+        + direction_stage[:, None, None]
+        * longitudinal_offsets_um[None, :, None]
+        / 1000.0
+        + perpendicular_stage[:, None, None]
+        * offsets_um[None, None, :]
+        / 1000.0
     )
     pixels = np.column_stack(
         [
             stack.stage_to_pixel(float(x), float(y))
-            for x, y in stage_points.T
+            for x, y in stage_points.reshape(2, -1).T
         ]
-    ).T
+    ).T.reshape(len(longitudinal_offsets_um), len(offsets_um), 2)
     local = pixels - np.array([cache.x0, cache.y0], dtype=float)
-    map_x = local[:, 0].astype(np.float32).reshape(1, -1)
-    map_y = local[:, 1].astype(np.float32).reshape(1, -1)
+    map_x = local[:, :, 0].astype(np.float32)
+    map_y = local[:, :, 1].astype(np.float32)
     sampled = cv2.remap(
         image,
         map_x,
         map_y,
         interpolation=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_REFLECT_101,
-    ).ravel()
-    return offsets_um * 1000.0, sampled.astype(float)
+    ).astype(float)
+    center_profile = sampled[len(longitudinal_offsets_um) // 2]
+    tail_size = max(2, int(math.ceil(len(offsets_um) * 0.25)))
+    neighboring_profiles = np.delete(
+        sampled, len(longitudinal_offsets_um) // 2, axis=0
+    )
+    background = np.concatenate(
+        (
+            neighboring_profiles[:, :tail_size].ravel(),
+            neighboring_profiles[:, -tail_size:].ravel(),
+        )
+    )
+    return offsets_um * 1000.0, center_profile, background
 
 
 def measure_track(
@@ -397,46 +501,8 @@ def measure_track(
     track: Track,
     config: ThicknessConfig = ThicknessConfig(),
 ) -> list[ThicknessRecord]:
-
-    start, end = track.endpoints
-
-    # ---------------------------------------------------------
-    # XY geometry: used for locating the track in microscope images
-    # ---------------------------------------------------------
-    start_stage = np.array(
-        [start.x_mm, start.y_mm],
-        dtype=float,
-    )
-    end_stage = np.array(
-        [end.x_mm, end.y_mm],
-        dtype=float,
-    )
-
-    delta_xy_mm = end_stage - start_stage
-    length_xy_mm = float(np.linalg.norm(delta_xy_mm))
-
-    if length_xy_mm <= 0:
-        raise ValueError(
-            f"track {track.track_id} has zero XY projected length"
-        )
-
-    # Unit vector perpendicular to the XY projection of the track.
-    # Thickness profile is still measured in the microscope XY image.
-    direction_xy = delta_xy_mm / length_xy_mm
-    perpendicular = np.array(
-        [-direction_xy[1], direction_xy[0]],
-        dtype=float,
-    )
-
-    # ---------------------------------------------------------
-    # 3D geometry: used for physical range / sampling distance
-    # ---------------------------------------------------------
-    delta_z_mm = end.z_mm - start.z_mm
-
-    length_3d_mm = math.sqrt(
-        length_xy_mm**2 + delta_z_mm**2
-    )
-    length_3d_um = length_3d_mm * 1000.0
+    polyline = _Polyline.from_track(track)
+    length_3d_um = polyline.length_um
 
     if length_3d_um <= 2.0 * config.endpoint_margin_um:
         raise ValueError(
@@ -445,22 +511,13 @@ def measure_track(
             "reduce endpoint margin"
         )
 
-    # Useful diagnostic information
-    correction_factor = length_3d_mm / length_xy_mm
-    angle_deg = math.degrees(
-        math.atan2(abs(delta_z_mm), length_xy_mm)
+    track_points_px = np.array(
+        [stack.stage_to_pixel(point[0], point[1]) for point in polyline.points_mm]
     )
-
-    # ---------------------------------------------------------
-    # Image cache
-    # ---------------------------------------------------------
-    start_px = stack.stage_to_pixel(*start_stage)
-    end_px = stack.stage_to_pixel(*end_stage)
 
     cache = _TrackImageCache(
         stack,
-        start_px,
-        end_px,
+        track_points_px,
         config,
     )
 
@@ -483,23 +540,14 @@ def measure_track(
     records: list[ThicknessRecord] = []
 
     for distance_um in distances:
-
-        # Fraction along the physical 3D track
-        fraction = distance_um / length_3d_um
-
-        # XY position corresponding to this 3D position
-        point_stage = (
-            start_stage + fraction * delta_xy_mm
-        )
+        point_3d, direction_xy = polyline.sample(float(distance_um))
+        point_stage = point_3d[:2]
+        perpendicular = np.array([-direction_xy[1], direction_xy[0]])
 
         point_px = stack.stage_to_pixel(*point_stage)
         local_px = cache.local_point(point_px)
 
-        # Z position corresponding to the same physical position
-        predicted_z = (
-            start.z_mm
-            + fraction * delta_z_mm
-        )
+        predicted_z = float(point_3d[2])
 
         center_index = int(
             np.argmin(np.abs(z_values - predicted_z))
@@ -523,17 +571,18 @@ def measure_track(
                 best_focus = score
                 best_index = frame_index
 
-        coordinates_nm, brightness = _sample_profile(
+        coordinates_nm, brightness, background = _sample_profile(
             cache.dog(best_index),
             stack,
             point_stage,
+            direction_xy,
             perpendicular,
             config,
             cache,
         )
         if float(np.ptp(brightness)) < config.minimum_contrast:
             continue
-        fit = _fit_profile(coordinates_nm, brightness)
+        fit = _fit_profile(coordinates_nm, brightness, background)
         if fit is None:
             continue
         # resolution_nm, width_nm, sigma_nm = fit
@@ -553,6 +602,7 @@ def measure_track(
                 fit_p_value=fit.fit_p_value,
                 width_error_nm=fit.width_error_nm,
                 width_relative_error=fit.width_relative_error,
+                noise_sigma=fit.noise_sigma,
             )
         )
     return records

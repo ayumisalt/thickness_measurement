@@ -5,7 +5,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <map>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -19,7 +22,88 @@ struct ThicknessRecord {
   double resolution_nm{};
   double width_nm{};
   double sigma_nm{};
+  double contrast{std::numeric_limits<double>::quiet_NaN()};
+  double fit_r2{std::numeric_limits<double>::quiet_NaN()};
+  double fit_nrmse{std::numeric_limits<double>::quiet_NaN()};
+  double reduced_chi2{std::numeric_limits<double>::quiet_NaN()};
+  double fit_p_value{std::numeric_limits<double>::quiet_NaN()};
+  double width_error_nm{std::numeric_limits<double>::quiet_NaN()};
+  double width_relative_error{std::numeric_limits<double>::quiet_NaN()};
+  double noise_sigma{std::numeric_limits<double>::quiet_NaN()};
 };
+
+struct QualityCuts {
+  std::optional<double> minimum_contrast;
+  std::optional<double> minimum_fit_r2;
+  std::optional<double> maximum_fit_nrmse;
+  std::optional<double> maximum_reduced_chi2;
+  std::optional<double> minimum_fit_p_value;
+  std::optional<double> maximum_width_error_nm;
+  std::optional<double> maximum_width_relative_error;
+  std::optional<double> maximum_width_nm;
+
+  bool requested() const {
+    return minimum_contrast || minimum_fit_r2 || maximum_fit_nrmse ||
+           maximum_reduced_chi2 || minimum_fit_p_value ||
+           maximum_width_error_nm || maximum_width_relative_error ||
+           maximum_width_nm;
+  }
+};
+
+inline bool is_quality_cut_option(const std::string &argument) {
+  return argument == "--minimum-contrast" ||
+         argument == "--minimum-fit-r2" ||
+         argument == "--maximum-fit-nrmse" ||
+         argument == "--maximum-reduced-chi2" ||
+         argument == "--minimum-fit-p-value" ||
+         argument == "--maximum-width-error-nm" ||
+         argument == "--maximum-width-relative-error" ||
+         argument == "--maximum-width-nm";
+}
+
+inline void set_quality_cut(QualityCuts &cuts, const std::string &argument,
+                            const std::string &text) {
+  const double value = std::stod(text);
+  if (argument == "--minimum-contrast")
+    cuts.minimum_contrast = value;
+  else if (argument == "--minimum-fit-r2")
+    cuts.minimum_fit_r2 = value;
+  else if (argument == "--maximum-fit-nrmse")
+    cuts.maximum_fit_nrmse = value;
+  else if (argument == "--maximum-reduced-chi2")
+    cuts.maximum_reduced_chi2 = value;
+  else if (argument == "--minimum-fit-p-value")
+    cuts.minimum_fit_p_value = value;
+  else if (argument == "--maximum-width-error-nm")
+    cuts.maximum_width_error_nm = value;
+  else if (argument == "--maximum-width-relative-error")
+    cuts.maximum_width_relative_error = value;
+  else if (argument == "--maximum-width-nm")
+    cuts.maximum_width_nm = value;
+  else
+    throw std::runtime_error("unknown quality-cut option: " + argument);
+}
+
+inline void validate_quality_cuts(const QualityCuts &cuts) {
+  const auto require_nonnegative = [](const std::optional<double> &value,
+                                      const std::string &name) {
+    if (value && *value < 0.0)
+      throw std::runtime_error(name + " must be non-negative");
+  };
+  require_nonnegative(cuts.minimum_contrast, "--minimum-contrast");
+  require_nonnegative(cuts.maximum_fit_nrmse, "--maximum-fit-nrmse");
+  require_nonnegative(cuts.maximum_reduced_chi2, "--maximum-reduced-chi2");
+  require_nonnegative(cuts.maximum_width_error_nm,
+                      "--maximum-width-error-nm");
+  require_nonnegative(cuts.maximum_width_relative_error,
+                      "--maximum-width-relative-error");
+  require_nonnegative(cuts.maximum_width_nm, "--maximum-width-nm");
+  if (cuts.minimum_fit_r2 && *cuts.minimum_fit_r2 > 1.0)
+    throw std::runtime_error("--minimum-fit-r2 cannot exceed 1");
+  if (cuts.minimum_fit_p_value &&
+      (*cuts.minimum_fit_p_value < 0.0 || *cuts.minimum_fit_p_value > 1.0))
+    throw std::runtime_error("--minimum-fit-p-value must be between 0 and 1");
+}
 
 struct VolumeRecord {
   int track_id{};
@@ -40,14 +124,29 @@ read_thickness(const std::filesystem::path &path) {
     const auto first = line.find_first_not_of(" \t\r\n");
     if (first == std::string::npos || line[first] == '#')
       continue;
-    ThicknessRecord row;
     std::istringstream parser(line);
-    if (!(parser >> row.track_id >> row.distance_um >> row.resolution_nm >>
-          row.width_nm >> row.sigma_nm)) {
+    std::vector<double> values;
+    std::string token;
+    while (parser >> token)
+      values.push_back(std::stod(token));
+    if (values.size() < 5) {
       throw std::runtime_error(path.string() + ":" +
                                std::to_string(line_number) +
-                               ": expected five columns");
+                               ": expected at least five columns");
     }
+    ThicknessRecord row;
+    row.track_id = static_cast<int>(values[0]);
+    row.distance_um = values[1];
+    row.resolution_nm = values[2];
+    row.width_nm = values[3];
+    row.sigma_nm = values[4];
+    double *optional_fields[] = {
+        &row.contrast,          &row.fit_r2,
+        &row.fit_nrmse,         &row.reduced_chi2,
+        &row.fit_p_value,       &row.width_error_nm,
+        &row.width_relative_error, &row.noise_sigma};
+    for (std::size_t i = 0; i < std::size(optional_fields) && i + 5 < values.size(); ++i)
+      *optional_fields[i] = values[i + 5];
     records.push_back(row);
   }
   return records;
@@ -62,19 +161,45 @@ write_thickness(const std::filesystem::path &path,
   std::ofstream output(path);
   if (!output)
     throw std::runtime_error("cannot write " + path.string());
-  output << "# columns: track_id distance_um resolution_nm width_nm sigma_nm\n";
+  output << "# columns: track_id distance_um resolution_nm width_nm sigma_nm "
+            "contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value "
+            "width_error_nm width_relative_error noise_sigma\n";
   for (const auto &comment : comments)
     output << "# " << comment << '\n';
-  output << std::fixed << std::setprecision(6);
   for (const auto &row : records) {
-    output << row.track_id << ' ' << row.distance_um << ' ' << row.resolution_nm
-           << ' ' << row.width_nm << ' ' << row.sigma_nm << '\n';
+    output << row.track_id << ' ' << std::fixed << std::setprecision(6)
+           << row.distance_um << ' ' << row.resolution_nm << ' ' << row.width_nm
+           << ' ' << row.sigma_nm << ' ' << row.contrast << ' '
+           << std::setprecision(9) << row.fit_r2 << ' ' << row.fit_nrmse << ' '
+           << row.reduced_chi2 << ' ' << std::scientific << row.fit_p_value
+           << std::fixed << std::setprecision(6) << ' ' << row.width_error_nm
+           << ' ' << std::setprecision(9) << row.width_relative_error << ' '
+           << std::setprecision(6) << row.noise_sigma << '\n';
   }
+}
+
+inline bool passes_quality(const ThicknessRecord &row, const QualityCuts &cuts) {
+  const auto minimum = [](double value, const std::optional<double> &limit) {
+    return !limit || (std::isfinite(value) && value >= *limit);
+  };
+  const auto maximum = [](double value, const std::optional<double> &limit) {
+    return !limit || (std::isfinite(value) && value <= *limit);
+  };
+  return std::isfinite(row.width_nm) && row.width_nm > 0.0 &&
+         minimum(row.contrast, cuts.minimum_contrast) &&
+         minimum(row.fit_r2, cuts.minimum_fit_r2) &&
+         maximum(row.fit_nrmse, cuts.maximum_fit_nrmse) &&
+         maximum(row.reduced_chi2, cuts.maximum_reduced_chi2) &&
+         minimum(row.fit_p_value, cuts.minimum_fit_p_value) &&
+         maximum(row.width_error_nm, cuts.maximum_width_error_nm) &&
+         maximum(row.width_relative_error,
+                 cuts.maximum_width_relative_error) &&
+         maximum(row.width_nm, cuts.maximum_width_nm);
 }
 
 inline std::vector<VolumeRecord>
 calculate_volumes(std::vector<ThicknessRecord> records,
-                  double maximum_width_nm = 800.0) {
+                  const QualityCuts &cuts = {}) {
   std::map<int, std::vector<ThicknessRecord>> grouped;
   for (const auto &row : records)
     grouped[row.track_id].push_back(row);
@@ -84,17 +209,58 @@ calculate_volumes(std::vector<ThicknessRecord> records,
     std::sort(rows.begin(), rows.end(), [](const auto &left, const auto &right) {
       return left.distance_um < right.distance_um;
     });
+    if (!cuts.requested()) {
+      double previous = 0.0;
+      double volume = 0.0;
+      for (const auto &row : rows) {
+        const double interval = row.distance_um - previous;
+        if (interval < 0)
+          throw std::runtime_error("non-monotonic distance for track " +
+                                   std::to_string(track_id));
+        previous = row.distance_um;
+        if (!std::isfinite(row.width_nm) || row.width_nm <= 0.0)
+          continue;
+        const double radius_um = row.width_nm / 2000.0;
+        volume += pi * radius_um * radius_um * interval;
+        result.push_back({track_id, row.distance_um, volume});
+      }
+      continue;
+    }
+
+    std::vector<std::size_t> accepted;
+    for (std::size_t i = 0; i < rows.size(); ++i)
+      if (passes_quality(rows[i], cuts))
+        accepted.push_back(i);
+
+    if (accepted.size() < 2)
+      continue;
+
+    const std::size_t first = accepted.front();
+    const std::size_t last = accepted.back();
+    std::size_t bracket = 0;
     double previous = 0.0;
     double volume = 0.0;
-    for (const auto &row : rows) {
+    for (std::size_t i = first; i <= last; ++i) {
+      const auto &row = rows[i];
       const double interval = row.distance_um - previous;
       if (interval < 0)
         throw std::runtime_error("non-monotonic distance for track " +
                                  std::to_string(track_id));
       previous = row.distance_um;
-      if (!(row.width_nm > 0.0 && row.width_nm <= maximum_width_nm))
-        continue;
-      const double radius_um = row.width_nm / 2000.0;
+
+      while (bracket + 1 < accepted.size() && accepted[bracket + 1] < i)
+        ++bracket;
+      double width = row.width_nm;
+      if (!passes_quality(row, cuts)) {
+        const auto &left = rows[accepted[bracket]];
+        const auto &right = rows[accepted[bracket + 1]];
+        const double span = right.distance_um - left.distance_um;
+        const double fraction = span > 0.0
+                                    ? (row.distance_um - left.distance_um) / span
+                                    : 0.0;
+        width = left.width_nm + fraction * (right.width_nm - left.width_nm);
+      }
+      const double radius_um = width / 2000.0;
       volume += pi * radius_um * radius_um * interval;
       result.push_back({track_id, row.distance_um, volume});
     }

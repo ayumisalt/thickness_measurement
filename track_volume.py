@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import argparse
 
+from thickness_analysis.quality_cli import (
+    add_quality_cut_arguments,
+    quality_cuts_from_args,
+)
 from thickness_analysis.volume import run_volume
 
 
@@ -17,21 +21,14 @@ def main() -> int:
     )
     parser.add_argument("input", help="combined thickness text")
     parser.add_argument("-o", "--output", required=True, help="volume output text")
-    parser.add_argument(
-        "--maximum-width-nm",
-        type=float,
-        default=None,
-        help=(
-            "optionally reject wider fits; "
-            "disabled by default"
-        ),
-    )
+    add_quality_cut_arguments(parser)
     args = parser.parse_args()
+    cuts = quality_cuts_from_args(parser, args)
     input_rows, output_rows = run_volume(
-        args.input, args.output, args.maximum_width_nm
+        args.input, args.output, quality_cuts=cuts
     )
     print(
-        f"Wrote {output_rows} accepted volume points from "
+        f"Wrote {output_rows} volume points from "
         f"{input_rows} thickness measurements to {args.output}"
     )
     return 0

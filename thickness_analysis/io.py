@@ -168,6 +168,7 @@ class ThicknessRecord:
     fit_p_value: float = float("nan")
     width_error_nm: float = float("nan")
     width_relative_error: float = float("nan")
+    noise_sigma: float = float("nan")
 
 
 def read_thickness_records(path: str | Path) -> list[ThicknessRecord]:
@@ -205,6 +206,7 @@ def read_thickness_records(path: str | Path) -> list[ThicknessRecord]:
                         fit_p_value=optional_float(9),
                         width_error_nm=optional_float(10),
                         width_relative_error=optional_float(11),
+                        noise_sigma=optional_float(12),
                     )
                 )
             except ValueError as exc:
@@ -226,7 +228,7 @@ def write_thickness_records(
             "# columns: "
             "track_id distance_um resolution_nm width_nm sigma_nm "
             "contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value "
-            "width_error_nm width_relative_error\n"
+            "width_error_nm width_relative_error noise_sigma\n"
         )
         for comment in comments:
             stream.write(f"# {comment}\n")
@@ -243,5 +245,6 @@ def write_thickness_records(
                 f"{row.reduced_chi2:.9f} "
                 f"{row.fit_p_value:.9g} "
                 f"{row.width_error_nm:.6f} "
-                f"{row.width_relative_error:.9f}\n"
+                f"{row.width_relative_error:.9f} "
+                f"{row.noise_sigma:.6f}\n"
             )

@@ -190,6 +190,21 @@ scripts/run-in-env.sh python scripts/process-dataset.py \
   --results-dir results/alpha-python
 ```
 
+fit品質による選択も同時に行う例:
+
+```bash
+scripts/run-in-env.sh python scripts/process-dataset.py \
+  /path/to/dataset-parent \
+  --pattern 'AREA00_alpha_*' \
+  --backend python \
+  --thickness-dir results/alpha-python/per-area \
+  --results-dir results/alpha-python \
+  --minimum-fit-contrast 60 \
+  --minimum-fit-r2 0.90 \
+  --maximum-width-relative-error 0.20 \
+  --minimum-reference-tracks-per-bin 10
+```
+
 C++/ROOT版:
 
 ```bash

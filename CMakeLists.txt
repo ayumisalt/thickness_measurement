@@ -25,7 +25,7 @@ add_executable(track_thickness_root cpp/src/track_thickness.cpp)
 target_link_libraries(
   track_thickness_root
   PRIVATE analysis_options ROOT::Core ROOT::Graf ROOT::Hist
-          ${OpenCV_LIBS} nlohmann_json::nlohmann_json
+          ROOT::MathCore ${OpenCV_LIBS} nlohmann_json::nlohmann_json
 )
 target_include_directories(track_thickness_root PRIVATE ${OpenCV_INCLUDE_DIRS})
 
