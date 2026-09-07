@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .io import read_thickness_records
+from .angles import embedded_angles, read_angles, select_reference_ids
 from .volume import (
     QualityCuts,
     VolumeRecord,
@@ -154,6 +155,9 @@ def create_volume_range_plot(
     input_type: str = "volume",
     quality_cuts: QualityCuts = QualityCuts(),
     minimum_reference_tracks_per_bin: int = 1,
+    reference_angles_path: str | Path | None = None,
+    candidate_angles_path: str | Path | None = None,
+    theta_window_deg: float | None = None,
 ) -> LinearFit:
     if input_type == "volume" and quality_cuts.requested:
         raise ValueError("fit-quality cuts require thickness input")
@@ -161,6 +165,31 @@ def create_volume_range_plot(
         raise ValueError("minimum reference tracks per bin must be at least one")
 
     reference = _load_analysis_records(reference_path, input_type, quality_cuts)
+    candidates = (_load_analysis_records(candidate_path, input_type, quality_cuts)
+                  if candidate_path is not None else [])
+    angle_label = ""
+    if theta_window_deg is not None:
+        if candidate_path is None:
+            raise ValueError("theta matching requires a candidate")
+        # Validate against raw IDs, including tracks later removed by quality cuts.
+        reader = read_thickness_records if input_type == "thickness" else read_volume_records
+        raw_reference = reader(reference_path)
+        raw_candidate = reader(candidate_path)
+        selected, center = select_reference_ids(
+            {r.track_id for r in raw_reference}, (read_angles(reference_angles_path) if reference_angles_path
+                                                else embedded_angles(raw_reference) if input_type == 'thickness'
+                                                else {}),
+            {r.track_id for r in raw_candidate}, (read_angles(candidate_angles_path) if candidate_angles_path
+                                                else embedded_angles(raw_candidate) if input_type == 'thickness'
+                                                else {}),
+            theta_window_deg,
+        )
+        reference = [r for r in reference if r.track_id in selected]
+        angle_label = f"; folded θ={center:.2f}° ± {theta_window_deg:g}°"
+        if not candidates:
+            raise ValueError("candidate has no volume points after quality cuts")
+    elif reference_angles_path is not None or candidate_angles_path is not None:
+        raise ValueError("angle tables require theta_window_deg")
     means_x, means_y, std_x, std_y, track_counts = _group_reference(
         reference,
         bin_width_um,
@@ -207,7 +236,6 @@ def create_volume_range_plot(
 
     score_rows: list[dict[str, object]] = []
     if candidate_path is not None:
-        candidates = _load_analysis_records(candidate_path, input_type, quality_cuts)
         grouped: dict[int, list[VolumeRecord]] = {}
         for row in candidates:
             if row.cumulative_volume_um3 <= maximum_volume_um3:
@@ -249,7 +277,7 @@ def create_volume_range_plot(
     axis.set(xlim=(0, x_limit_um), ylim=(0, y_limit_um3))
     axis.set_xlabel("Range [µm]")
     axis.set_ylabel("Cumulative volume [µm³]")
-    axis.set_title("Track volume versus range")
+    axis.set_title("Track volume versus range" + angle_label)
     axis.grid(alpha=0.2)
     axis.legend()
     figure.tight_layout()

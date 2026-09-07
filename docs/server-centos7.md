@@ -229,3 +229,79 @@ scripts/run-in-env.sh python scripts/process-dataset.py \
 ```
 
 実行前に対象fileとcommandを確認する場合は `--dry-run` を付ける。
+
+## 9. Alpha referenceのθ比較
+
+### PNGから再測定してローカルへ戻す手順
+
+コードを更新し、次の2日分を`--skip-thickness`なしで実行する。
+角度cutはこの段階では付けず、15列の全fit成功点を保存する。
+以下は指定した既存results名のper-area結果とcombined/volume/plotを再生成する。
+
+```bash
+cd /home/ayumi/thickness_measurement
+git pull --ff-only origin main
+scripts/run-in-env.sh python -m unittest discover -s tests -v
+
+THICKNESS_DATA_ROOT=/data_node0/data03/public/samba/E07/Analysis_202101/MOD108/PL11/calibration/thickness_measurement
+
+scripts/run-in-env.sh python scripts/process-dataset.py \
+  "$THICKNESS_DATA_ROOT/20260706_AREA00" \
+  --pattern 'AREA00_alpha_*' --backend python \
+  --thickness-dir results/20260706-alpha-python/per-area \
+  --results-dir results/20260706-alpha-python
+
+scripts/run-in-env.sh python scripts/process-dataset.py \
+  "$THICKNESS_DATA_ROOT/20260707_AREA03_04_05_06" \
+  --pattern 'AREA*_alpha_*' --backend python \
+  --thickness-dir results/20260707-alpha-python/per-area \
+  --results-dir results/20260707-alpha-python
+```
+
+両方の`all_track_thickness_python.txt`のheader末尾が`theta_deg local_theta_deg`に
+なったことを確認し、2つのresults directoryをローカルへ同名でダウンロードする。
+新しいcombinedには角度が保存されるため、その後の比較にサーバー座標やPNGは不要。
+ローカルでは次のように比較する（既存candidateが13列なら保存済み角度表を使用）。
+
+```bash
+python scripts/compare-theta.py \
+  results/20260706-alpha-python/all_track_thickness_python.txt \
+  results/20260707-alpha-python/all_track_thickness_python.txt \
+  --candidate results/candidate_001/track_thickness.txt \
+  --candidate-angles results/candidate_001/theta_acquisition_20260907.txt \
+  --output-dir results/alpha_theta_comparison_after_remeasurement
+```
+
+### 旧13列をサーバー座標と組み合わせて比較する場合
+
+新しいコードと、candidateの`track_thickness.txt`および角度表をサーバーへ配置する。
+candidateの元座標がローカルにしかない場合は、ローカルで次を実行し、生成された
+角度表をサーバーの同じ`results/candidate_001/`へコピーする。
+
+```bash
+python track_angles.py results/candidate_001/track_thickness.txt \
+  -o results/candidate_001/theta_acquisition_20260907.txt
+```
+
+サーバーでは以下の1回で再統合と8条件の比較ができる。
+referenceの元座標は既存thicknessのprovenanceから読み取り、画像のrefitは行わない。
+
+```bash
+cd /home/ayumi/thickness_measurement
+scripts/run-in-env.sh python scripts/compare-theta.py \
+  results/20260706-alpha-python/all_track_thickness_python.txt \
+  results/20260707-alpha-python/all_track_thickness_python.txt \
+  --candidate results/candidate_001/track_thickness.txt \
+  --candidate-angles results/candidate_001/theta_acquisition_20260907.txt \
+  --windows 5 10 15 \
+  --minimum-reference-tracks-per-bin 10 \
+  --output-dir results/alpha_theta_comparison_20260907
+```
+
+再実行時は出力directoryを別名にする。元パスが移動している場合は
+`--path-map /old/root=/new/root`を追加する。candidate座標もサーバーで参照可能なら
+`--candidate-angles`は省略でき、必要に応じてcandidateの元パスも`--path-map`で対応させる。
+
+結果確認は`comparison_summary.csv`と`reference_bins.csv`を中心に行う。
+少数統計でfitできない条件もsummaryへ残る。各条件のplot/score CSVはfit可能な場合のみ生成される。
+数式・不確かさの意味は[解析仕様](analysis.md)のθ比較節を参照する。

@@ -42,6 +42,7 @@ struct Track {
 struct PolylineSample {
   Point point;
   cv::Point2d direction_xy;
+  double local_theta_deg;
 };
 
 class Polyline {
@@ -109,7 +110,9 @@ public:
       dy = points_[direction_segment + 1].y - points_[direction_segment].y;
     }
     const double xy_length = std::hypot(dx, dy);
-    return {point, {dx / xy_length, dy / xy_length}};
+    const double local_theta = std::atan2(std::hypot(end.x-start.x, end.y-start.y),
+                                         end.z-start.z) * 180.0 / std::acos(-1.0);
+    return {point, {dx / xy_length, dy / xy_length}, local_theta};
   }
 
 private:
@@ -482,6 +485,13 @@ fit_profile(const std::vector<double> &coordinates,
 std::vector<ThicknessRecord>
 measure_track(const Stack &stack, const Track &track, const Config &config) {
   const Polyline polyline(track);
+  const auto &first = polyline.points().front();
+  const auto &last = polyline.points().back();
+  const double transverse = std::hypot(last.x-first.x, last.y-first.y);
+  const double dz = last.z-first.z;
+  const double theta = (transverse > 0 || dz != 0)
+      ? std::atan2(transverse, dz) * 180.0 / std::acos(-1.0)
+      : std::numeric_limits<double>::quiet_NaN();
   const double length_um = polyline.length_um();
   if (length_um <= 2.0 * config.endpoint_margin_um)
     throw std::runtime_error("track " + std::to_string(track.id) +
@@ -586,7 +596,9 @@ measure_track(const Stack &stack, const Track &track, const Config &config) {
                          fit->fit_p_value,
                          fit->width_error_nm,
                          fit->width_relative_error,
-                         fit->noise_sigma});
+                         fit->noise_sigma,
+                         theta,
+                         sampled_track.local_theta_deg});
   }
   return records;
 }

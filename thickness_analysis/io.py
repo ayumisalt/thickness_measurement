@@ -169,6 +169,8 @@ class ThicknessRecord:
     width_error_nm: float = float("nan")
     width_relative_error: float = float("nan")
     noise_sigma: float = float("nan")
+    theta_deg: float = float("nan")
+    local_theta_deg: float = float("nan")
 
 
 def read_thickness_records(path: str | Path) -> list[ThicknessRecord]:
@@ -207,6 +209,8 @@ def read_thickness_records(path: str | Path) -> list[ThicknessRecord]:
                         width_error_nm=optional_float(10),
                         width_relative_error=optional_float(11),
                         noise_sigma=optional_float(12),
+                        theta_deg=optional_float(13),
+                        local_theta_deg=optional_float(14),
                     )
                 )
             except ValueError as exc:
@@ -228,8 +232,9 @@ def write_thickness_records(
             "# columns: "
             "track_id distance_um resolution_nm width_nm sigma_nm "
             "contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value "
-            "width_error_nm width_relative_error noise_sigma\n"
+            "width_error_nm width_relative_error noise_sigma theta_deg local_theta_deg\n"
         )
+        stream.write("# theta convention: acquisition z; polar 0-180 deg; endpoint theta and local segment theta; nan if unavailable\n")
         for comment in comments:
             stream.write(f"# {comment}\n")
         for row in records:
@@ -246,5 +251,6 @@ def write_thickness_records(
                 f"{row.fit_p_value:.9g} "
                 f"{row.width_error_nm:.6f} "
                 f"{row.width_relative_error:.9f} "
-                f"{row.noise_sigma:.6f}\n"
+                f"{row.noise_sigma:.6f} "
+                f"{row.theta_deg:.9f} {row.local_theta_deg:.9f}\n"
             )

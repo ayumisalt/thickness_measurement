@@ -39,6 +39,8 @@ class ProcessDatasetTest(unittest.TestCase):
                     "0.9",
                     "--maximum-width-relative-error",
                     "0.2",
+                    "--minimum-theta-deg", "30",
+                    "--maximum-theta-deg", "45",
                 ],
                 check=True,
                 capture_output=True,
@@ -53,6 +55,7 @@ class ProcessDatasetTest(unittest.TestCase):
             self.assertIn("AREA00_alpha_0000/image.json", completed.stdout)
             self.assertNotIn("AREA00_alpha_0001/image.json ", completed.stdout)
             self.assertIn("track_volume.py", completed.stdout)
+            self.assertIn("--minimum-theta-deg 30.0 --maximum-theta-deg 45.0", completed.stdout)
             self.assertIn(
                 "--minimum-contrast 60.0 --minimum-fit-r2 0.9 "
                 "--maximum-width-relative-error 0.2",

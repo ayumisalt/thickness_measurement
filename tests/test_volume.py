@@ -21,6 +21,17 @@ import numpy as np
 
 
 class VolumeTest(unittest.TestCase):
+    def test_embedded_theta_cut_and_legacy_rejection(self):
+        rows = [ThicknessRecord(i, d, 0, 200, 0, theta_deg=t)
+                for i, t in [(1, 75), (2, 105), (3, 30)] for d in [1, 2]]
+        result = calculate_volumes_with_quality(rows, QualityCuts(minimum_theta_deg=70, maximum_theta_deg=80))
+        self.assertEqual({r.track_id for r in result}, {1, 2})
+        with self.assertRaisesRegex(ValueError, "theta"):
+            calculate_volumes_with_quality([ThicknessRecord(1, 1, 0, 200, 0)], QualityCuts(minimum_theta_deg=70))
+        polyline = _Polyline.from_track(Track(1, (TrackPoint(0, 0, 0), TrackPoint(.001, 0, 0), TrackPoint(.001, 0, .001))))
+        self.assertAlmostEqual(polyline.local_theta(1), 90)
+        self.assertAlmostEqual(polyline.local_theta(1.5), 0)
+
     def test_cylinder_volume_and_rejected_width_gap(self) -> None:
         rows = [
             ThicknessRecord(1, 1.0, 0, 1000.0, 0),  # rejected

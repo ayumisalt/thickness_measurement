@@ -9,6 +9,31 @@ from thickness_analysis.volume import QualityCuts
 
 
 class VisualizeTest(unittest.TestCase):
+    def test_angle_matching_excludes_thick_reference_and_reflects_z(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = [ThicknessRecord(i, d, 0, w, 0, theta_deg={1:75,2:105,3:20}[i])
+                         for i, w in [(1, 200), (2, 200), (3, 2000)]
+                         for d in [1, 2, 3, 4]]
+            candidate = [ThicknessRecord(9, d, 0, 200, 0, theta_deg=75) for d in [1, 2, 3, 4]]
+            write_thickness_records(root / "ref.txt", reference)
+            write_thickness_records(root / "cand.txt", candidate)
+            (root / "ref_angles.txt").write_text("1 75\n2 105\n3 20\n")
+            (root / "cand_angles.txt").write_text("9 75\n")
+            fit = create_volume_range_plot(
+                root / "ref.txt", root / "plot.png", root / "cand.txt", root / "scores.csv",
+                input_type="thickness", bin_width_um=2, reference_maximum_range_um=5,
+                minimum_reference_tracks_per_bin=2,
+                reference_angles_path=root / "ref_angles.txt",
+                candidate_angles_path=root / "cand_angles.txt", theta_window_deg=0)
+            import math
+            self.assertAlmostEqual(fit.slope, math.pi * .1**2)
+            direct = create_volume_range_plot(
+                root / "ref.txt", root / "direct.png", root / "cand.txt",
+                input_type="thickness", bin_width_um=2, reference_maximum_range_um=5,
+                minimum_reference_tracks_per_bin=2, theta_window_deg=0)
+            self.assertEqual(direct, fit)
+
     def test_thickness_quality_cuts_feed_plot_and_scores(self) -> None:
         reference: list[ThicknessRecord] = []
         for track_id, width in ((1, 200.0), (2, 220.0)):

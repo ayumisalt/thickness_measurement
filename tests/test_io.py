@@ -11,6 +11,16 @@ from thickness_analysis.io import (
 
 
 class TrackInputTest(unittest.TestCase):
+    def test_legacy_thirteen_columns_keep_angles_missing(self) -> None:
+        import math
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.txt"
+            path.write_text("1 2 300 700 200 80 .98 .03 1.2 .25 50 .071 4.5\n")
+            row = read_thickness_records(path)[0]
+        self.assertEqual(row.noise_sigma, 4.5)
+        self.assertTrue(math.isnan(row.theta_deg))
+        self.assertTrue(math.isnan(row.local_theta_deg))
+
     def test_five_column_input_preserves_polyline_and_applies_shrink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tracks.txt"
@@ -52,6 +62,8 @@ class TrackInputTest(unittest.TestCase):
             width_error_nm=50.0,
             width_relative_error=0.071,
             noise_sigma=4.5,
+            theta_deg=105.0,
+            local_theta_deg=110.0,
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "thickness.txt"
@@ -60,6 +72,8 @@ class TrackInputTest(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertAlmostEqual(result[0].noise_sigma, 4.5)
         self.assertAlmostEqual(result[0].fit_p_value, 0.25)
+        self.assertEqual(result[0].theta_deg, 105)
+        self.assertEqual(result[0].local_theta_deg, 110)
 
 
 if __name__ == "__main__":

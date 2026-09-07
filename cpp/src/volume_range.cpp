@@ -1,4 +1,5 @@
 #include "analysis_io.hpp"
+#include "track_angles.hpp"
 
 #include <TCanvas.h>
 #include <TAxis.h>
@@ -87,6 +88,8 @@ int main(int argc, char **argv) {
     fs::path candidate_path;
     fs::path output;
     fs::path scores_output;
+    fs::path reference_angles_path, candidate_angles_path;
+    std::optional<double> theta_window;
     double bin_width = 5.0;
     double reference_max_range = 30.0;
     double maximum_volume = 5.0;
@@ -106,6 +109,12 @@ int main(int argc, char **argv) {
         output = next();
       else if (argument == "--scores-output")
         scores_output = next();
+      else if (argument == "--reference-angles")
+        reference_angles_path = next();
+      else if (argument == "--candidate-angles")
+        candidate_angles_path = next();
+      else if (argument == "--theta-window-deg")
+        theta_window = std::stod(next());
       else if (argument == "--bin-width-um")
         bin_width = std::stod(next());
       else if (argument == "--reference-max-range-um")
@@ -143,7 +152,40 @@ int main(int argc, char **argv) {
       throw std::runtime_error(
           "--minimum-reference-tracks-per-bin must be at least one");
 
-    const auto reference = load_analysis(reference_path, input_type, cuts);
+    auto reference = load_analysis(reference_path, input_type, cuts);
+    std::string angle_label;
+    if (theta_window) {
+      if (candidate_path.empty())
+        throw std::runtime_error("theta matching requires a candidate");
+      const auto angle_table = [&](const fs::path &table, const fs::path &data) {
+        if (!table.empty()) return thickness::read_angles(table);
+        if (input_type == "thickness")
+          return thickness::embedded_angles(thickness::read_thickness(data));
+        throw std::runtime_error("volume inputs require explicit angle tables");
+      };
+      const auto raw_ids = [&](const fs::path &path) {
+        std::set<int> ids;
+        if (input_type == "thickness") {
+          for (const auto &row : thickness::read_thickness(path)) ids.insert(row.track_id);
+        } else {
+          for (const auto &row : thickness::read_volumes(path)) ids.insert(row.track_id);
+        }
+        return ids;
+      };
+      const auto selection = thickness::select_reference_ids(
+          raw_ids(reference_path), angle_table(reference_angles_path, reference_path),
+          raw_ids(candidate_path), angle_table(candidate_angles_path, candidate_path), *theta_window);
+      const auto &selected = selection.first;
+      const double center = selection.second;
+      reference.erase(std::remove_if(reference.begin(), reference.end(),
+          [&](const auto &row) { return !selected.count(row.track_id); }), reference.end());
+      if (load_analysis(candidate_path, input_type, cuts).empty())
+        throw std::runtime_error("candidate has no volume points after quality cuts");
+      angle_label = " (folded theta=" + std::to_string(center) + " +/- " +
+                    std::to_string(*theta_window) + " deg)";
+    } else if (!reference_angles_path.empty() || !candidate_angles_path.empty()) {
+      throw std::runtime_error("angle tables require --theta-window-deg");
+    }
     std::vector<double> mean_x, mean_y, std_x, std_y;
     std::vector<int> track_counts;
     const auto mean = [](const std::vector<double> &values) {
@@ -261,8 +303,8 @@ int main(int argc, char **argv) {
       }
     }
 
-    multigraph.SetTitle("Track volume versus range;Range [#mum];Cumulative "
-                        "volume [#mum^{3}]");
+    multigraph.SetTitle(("Track volume versus range" + angle_label +
+                        ";Range [#mum];Cumulative volume [#mum^{3}]").c_str());
     multigraph.Draw("A");
     multigraph.GetXaxis()->SetLimits(0, x_limit);
     multigraph.SetMinimum(0);

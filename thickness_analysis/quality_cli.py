@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 
 from .volume import QualityCuts
 
@@ -13,6 +14,8 @@ def add_quality_cut_arguments(
     include_minimum_contrast: bool = True,
     include_maximum_width: bool = True,
 ) -> None:
+    parser.add_argument("--minimum-theta-deg", type=float, help="minimum folded endpoint theta [0,90 degrees]")
+    parser.add_argument("--maximum-theta-deg", type=float, help="maximum folded endpoint theta [0,90 degrees]")
     if include_minimum_contrast:
         parser.add_argument(
             "--minimum-contrast", type=float, help="minimum fitted profile contrast"
@@ -56,6 +59,8 @@ def quality_cuts_from_args(
     args: argparse.Namespace,
 ) -> QualityCuts:
     cuts = QualityCuts(
+        minimum_theta_deg=getattr(args, "minimum_theta_deg", None),
+        maximum_theta_deg=getattr(args, "maximum_theta_deg", None),
         minimum_contrast=getattr(args, "minimum_contrast", None),
         minimum_fit_r2=getattr(args, "minimum_fit_r2", None),
         maximum_fit_nrmse=getattr(args, "maximum_fit_nrmse", None),
@@ -67,6 +72,12 @@ def quality_cuts_from_args(
         ),
         maximum_width_nm=getattr(args, "maximum_width_nm", None),
     )
+    for value in (cuts.minimum_theta_deg, cuts.maximum_theta_deg):
+        if value is not None and (not math.isfinite(value) or not 0 <= value <= 90):
+            parser.error("theta limits must be finite and between 0 and 90 degrees")
+    if (cuts.minimum_theta_deg is not None and cuts.maximum_theta_deg is not None
+            and cuts.minimum_theta_deg > cuts.maximum_theta_deg):
+        parser.error("minimum theta cannot exceed maximum theta")
     nonnegative = {
         "--minimum-contrast": cuts.minimum_contrast,
         "--maximum-fit-nrmse": cuts.maximum_fit_nrmse,
@@ -89,6 +100,8 @@ def quality_cuts_from_args(
 
 def quality_cut_cli_tokens(cuts: QualityCuts) -> list[str]:
     names = {
+        "minimum_theta_deg": "--minimum-theta-deg",
+        "maximum_theta_deg": "--maximum-theta-deg",
         "minimum_contrast": "--minimum-contrast",
         "minimum_fit_r2": "--minimum-fit-r2",
         "maximum_fit_nrmse": "--maximum-fit-nrmse",

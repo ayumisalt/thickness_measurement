@@ -198,7 +198,7 @@ python track_volume.py \
   --maximum-width-relative-error 0.20
 ```
 
-指定可能なcutは、contrast、R²、NRMSE、reduced χ²、p-value、width不確かさ、width相対不確かさ、および任意のwidth上限です。バッチ処理では、fit前のprofile選別は`--minimum-contrast`、fit後のcontrast cutは`--minimum-fit-contrast`で別々に指定します。cutで除外された内部測定点は、前後の採用点からwidthを線形補間して体積積分するため、その区間が体積ゼロとして失われることはありません。先頭・末尾側の不採用測定点は出力せず、採用点が2点未満のtrackは除外します。
+指定可能なcutは、contrast、R²、NRMSE、reduced χ²、p-value、width不確かさ、width相対不確かさ、任意のwidth上限、および対称化θの上下限です。バッチ処理では、fit前のprofile選別は`--minimum-contrast`、fit後のcontrast cutは`--minimum-fit-contrast`で別々に指定します。cutで除外された内部測定点は、前後の採用点からwidthを線形補間して体積積分するため、その区間が体積ゼロとして失われることはありません。先頭・末尾側の不採用測定点は出力せず、採用点が2点未満のtrackは除外します。
 
 ### 4. Volume–rangeの可視化
 
@@ -245,6 +245,65 @@ p-value cutには、13列目に`noise_sigma`を含む現在のthickness出力が
 - 基準試料の傾き誤差だけを用いるreference-only z-score
 - 基準・未知試料双方の傾き誤差を用いるz-score
 - 上記の合成不確かさによる3σ範囲との整合性
+
+## 角度情報の保存と事後cut
+
+PNGから太さを測定すると、15列thicknessの末尾に`theta_deg`（track始点→終点）と
+`local_theta_deg`（測定位置のsegment）を保存します。zは測定時のShrinkで割った
+acquisition座標を使い、水平は90°です。統合後も角度列を保持するため、
+このthicknessファイルだけをダウンロードすれば、元座標やPNGなしで角度cutを変更できます。
+旧5〜13列も読み込めますが、角度は欠損値となり、角度cut時には明示的にエラーにします。
+
+角度cutは`min(θ, 180°−θ)`を使うtrack単位の選択です。75°と105°を同じ角度として扱います。
+局所角度は診断用で、このcutには使用しません。quality cutと同じCLI/APIに統合しています。
+
+```bash
+python track_volume.py results/all_track_thickness.txt \
+  --minimum-fit-r2 0.90 --maximum-width-relative-error 0.20 \
+  --minimum-theta-deg 30 --maximum-theta-deg 45 \
+  -o results/volume_theta30_45.txt
+```
+
+同じ上下限optionを`volume_range.py --input-type thickness`、`scripts/process-dataset.py`、
+C++版にも指定できます。バッチ処理のcutは測定後のvolume/plotにのみ適用し、
+thicknessにはcut前の全fit成功点と角度を保存します。将来のcut変更に画像のrefitは不要です。
+
+candidateが1 trackの場合、その角度に対してreferenceを±X°に揃えられます。
+
+```bash
+python volume_range.py \
+  results/reference/all_track_thickness_python.txt results/candidate/track_thickness.txt \
+  --input-type thickness --minimum-fit-r2 0.90 --maximum-width-relative-error 0.20 \
+  --theta-window-deg 5 --minimum-reference-tracks-per-bin 10 \
+  --scores-output results/candidate/scores_theta5.csv \
+  -o results/candidate/comparison_theta5.png
+```
+
+`volume_range_root`にも同じoptionを指定できます。±5°・±10°・±15°と角度cutなしを、
+基本cut／p≥0.01追加の8条件で一括比較する場合:
+
+```bash
+python scripts/compare-theta.py \
+  results/20260706-alpha-python/all_track_thickness_python.txt \
+  results/20260707-alpha-python/all_track_thickness_python.txt \
+  --candidate results/candidate_001/track_thickness.txt \
+  --output-dir results/alpha_theta_comparison_20260907
+```
+
+出力directoryは新規名にしてください。統合text、角度表・provenance、条件別PNG/score CSV、
+`comparison_summary.csv`、`reference_bins.csv`、`selected_reference_tracks.csv`、
+`manifest.json`を保存します。10 track以上のreference binが2個未満なら
+`insufficient_reference_bins`と記録し、その条件のfit/plotは生成しません。
+体積上限は従来の5 µm³（reference/candidate両方のfit点に適用）、reference binは
+0–30 µmの5 µm幅です。上限依存性は`--maximum-volume-um3`を変え、別directoryで確認できます。
+
+旧13列で角度を取得する場合は、元座標が参照可能なmachineで`track_angles.py INPUT -o angles.txt`
+を実行できます。`source_map`を再帰的に辿り、測定時の座標とShrinkから角度表を作ります。
+移動したpathは`--path-map /old/root=/new/root`を繰り返して対応させます。
+15列では埋め込み角度を優先し、元座標は不要です。
+比較CLIの`--reference-angles`／`--candidate-angles`で別の角度表を指定すると、そちらを優先します。
+一括比較では`--candidate-angles`で旧candidateの角度表を渡せます。
+別の角度表を使う際は、表のIDを比較入力に一致させ、再統合後は表も再生成してください。
 
 ## C++ / ROOT版の使い方
 
@@ -295,7 +354,7 @@ cmake --build build
 ### Thickness測定結果
 
 ```text
-# columns: track_id distance_um resolution_nm width_nm sigma_nm contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value width_error_nm width_relative_error noise_sigma
+# columns: track_id distance_um resolution_nm width_nm sigma_nm contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value width_error_nm width_relative_error noise_sigma theta_deg local_theta_deg
 ```
 
 - `distance_um`: track先頭点からの距離 [µm]
@@ -310,6 +369,8 @@ cmake --build build
 - `width_error_nm`: fit covarianceから伝播したwidth不確かさ [nm]
 - `width_relative_error`: `width_error_nm / width_nm`
 - `noise_sigma`: profile両端周辺から推定した画素noise
+- `theta_deg`: acquisition座標でのtrack始点→終点の極角 [degree, 0–180]
+- `local_theta_deg`: 測定位置のsegmentの極角 [degree, 0–180]
 
 ### 累積体積
 

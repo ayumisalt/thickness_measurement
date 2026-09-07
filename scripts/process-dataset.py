@@ -93,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
         include_minimum_contrast=False,
         include_maximum_width=False,
     )
+    # Shared theta/fit cuts are applied only by track_volume, never by the
+    # image measurement command, so the combined 15-column result stays reusable.
     parser.add_argument(
         "--minimum-fit-contrast",
         dest="minimum_contrast",

@@ -43,6 +43,10 @@ def main() -> int:
         help="omit reference bins with fewer unique tracks (default: 1)",
     )
     add_quality_cut_arguments(parser)
+    parser.add_argument("--reference-angles", help="reference track_id theta_deg table")
+    parser.add_argument("--candidate-angles", help="candidate track_id theta_deg table")
+    parser.add_argument("--theta-window-deg", type=float,
+                        help="match folded reference theta to the single candidate ± degrees")
     args = parser.parse_args()
     cuts = quality_cuts_from_args(parser, args)
     if args.input_type != "thickness" and cuts.requested:
@@ -60,6 +64,9 @@ def main() -> int:
         input_type=args.input_type,
         quality_cuts=cuts,
         minimum_reference_tracks_per_bin=args.minimum_reference_tracks_per_bin,
+        reference_angles_path=args.reference_angles,
+        candidate_angles_path=args.candidate_angles,
+        theta_window_deg=args.theta_window_deg,
     )
     print(
         f"Wrote {args.output}; reference slope = "

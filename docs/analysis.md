@@ -44,7 +44,7 @@ event_id track_id x_mm y_mm z_mm_shrunk
 Thickness:
 
 ```text
-# columns: track_id distance_um resolution_nm width_nm sigma_nm contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value width_error_nm width_relative_error noise_sigma
+# columns: track_id distance_um resolution_nm width_nm sigma_nm contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value width_error_nm width_relative_error noise_sigma theta_deg local_theta_deg
 ```
 
 Volume:
@@ -64,6 +64,38 @@ Volume:
 referenceの各range binはtrackごとに一度平均してからtrack間の平均と標準偏差を計算する。`--minimum-reference-tracks-per-bin`により、統計数が不足する長飛程binをfitから除外できる。candidateとの差のz-scoreにはreferenceとcandidateの傾き誤差を二乗和で用いる。
 
 `consistent_with_reference_3sigma` は品質確認用の統計的目安であり、物理的なcharge同定を単独で保証しない。chargeラベルとして運用する前に、複数の既知charge sample、測定条件ごとのsystematic uncertainty、track方向、quality cutの妥当性を検証する必要がある。
+
+## θを揃える場合の定義と制約
+
+θは測定時のacquisition座標、すなわち入力zを`input_shrink`で割った座標で、
+track全体の始点と終点の差から`atan2(hypot(Δx, Δy), Δz)`で求める極角とする。
+水平は90°。`θfold = min(θ, 180°−θ)`へ折り返し、
+`abs(θfold_reference − θfold_candidate) <= X`を満たすtrack全体を採用する。
+境界は含む（浮動小数丸め許容1e-10 degree）。z符号反転と点順序反転で採否は変わらない。
+これは収縮を戻した物理空間の角度ではなく、画像上の見かけの太さに対応する角度である。
+
+測定結果の14列目に代表θ、15列目に測定位置の局所θを保存する。統合後も保持する。
+角度表へexportした場合、埋め込み情報では測定点の局所θfold最小・最大、旧形式から
+元座標を参照した場合は全segmentの最小・最大を出力する。track全体の角度cutは
+局所segmentへの角度cutではないため、曲がりの大きいtrackでは代表角度の限界がある。
+測定と同一座標・Shrinkを使う必要があり、座標を更新した場合はthicknessとの対応を確認する。
+15列thicknessは元座標を参照せず角度cutできる。旧形式で角度を補う場合のみ元座標が必要。
+別の角度表を使う場合は現在のcombined IDへ生成し直す。欠損角度を推測しない。
+始終点が一致するtrackは代表θをnanで保存し、角度cut要求時にエラーとする。
+局所θは局所segmentの3D方向から求める。横断profile用のXY方向を近傍segmentから
+借りる場合でも、局所θには元のsegmentの方向を保存する。
+
+角度選択後も品質cut・内部width補間・体積積分・track単位bin集計は従来どおり。
+採用点数はquality条件を通った実測点、valid track数は2採用点以上のtrackを意味する。
+summaryにはvalid trackに属する採用点数も別途出す。CSVの`n_volume_points`は
+内部補間を含み、体積上限5 µm³適用後のcandidate fit点数である。
+referenceはbin内のtrack間標準偏差を重みに原点固定fitし、candidateは非加重fitする。
+報告するslope誤差はfit残差から計算した値で、累積点間・bin間の相関やwidth誤差の
+伝播、較正系統誤差を含む総合不確かさではない。
+
+角度幅によるreference slopeの変化と残存統計を併記して、太さの差が角度選択だけで
+説明できるかを検討する。角度cutでrange分布や体積上限による選択も変わり得るため、
+差の原因を角度に断定せず、z-scoreから物理的chargeを確定しない。
 
 ## 旧コードからの主な修正
 

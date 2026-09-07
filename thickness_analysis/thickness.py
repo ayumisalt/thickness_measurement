@@ -98,6 +98,12 @@ class _Polyline:
             xy_length = float(np.linalg.norm(xy))
         return point, xy / xy_length
 
+    def local_theta(self, distance_um: float) -> float:
+        segment = min(int(np.searchsorted(self.cumulative_lengths_um[1:], distance_um,
+                                         side="left")), len(self.segment_lengths_um) - 1)
+        dx, dy, dz = self.segment_vectors_mm[segment]
+        return math.degrees(math.atan2(math.hypot(dx, dy), dz))
+
 def tanh_gaussian(
     x_nm: np.ndarray,
     saturation: float,
@@ -502,6 +508,9 @@ def measure_track(
     config: ThicknessConfig = ThicknessConfig(),
 ) -> list[ThicknessRecord]:
     polyline = _Polyline.from_track(track)
+    delta = polyline.points_mm[-1] - polyline.points_mm[0]
+    theta = (math.degrees(math.atan2(math.hypot(delta[0], delta[1]), delta[2]))
+             if np.linalg.norm(delta) > 0 else float("nan"))
     length_3d_um = polyline.length_um
 
     if length_3d_um <= 2.0 * config.endpoint_margin_um:
@@ -603,6 +612,8 @@ def measure_track(
                 width_error_nm=fit.width_error_nm,
                 width_relative_error=fit.width_relative_error,
                 noise_sigma=fit.noise_sigma,
+                theta_deg=theta,
+                local_theta_deg=polyline.local_theta(float(distance_um)),
             )
         )
     return records

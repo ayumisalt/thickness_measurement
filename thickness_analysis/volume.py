@@ -29,6 +29,8 @@ class QualityCuts:
     maximum_width_error_nm: float | None = None
     maximum_width_relative_error: float | None = None
     maximum_width_nm: float | None = None
+    minimum_theta_deg: float | None = None
+    maximum_theta_deg: float | None = None
 
     @property
     def requested(self) -> bool:
@@ -42,6 +44,8 @@ def passes_quality(row: ThicknessRecord, cuts: QualityCuts) -> bool:
         return False
 
     checks = (
+        (cuts.minimum_theta_deg, min(row.theta_deg, 180 - row.theta_deg), lambda v, l: v >= l),
+        (cuts.maximum_theta_deg, min(row.theta_deg, 180 - row.theta_deg), lambda v, l: v <= l),
         (cuts.minimum_contrast, row.contrast, lambda value, limit: value >= limit),
         (cuts.minimum_fit_r2, row.fit_r2, lambda value, limit: value >= limit),
         (cuts.maximum_fit_nrmse, row.fit_nrmse, lambda value, limit: value <= limit),
@@ -121,6 +125,10 @@ def calculate_volumes_with_quality(
     """
 
     grouped: dict[int, list[ThicknessRecord]] = {}
+    records = list(records)
+    if cuts.minimum_theta_deg is not None or cuts.maximum_theta_deg is not None:
+        from .angles import embedded_angles
+        embedded_angles(records)
     for row in records:
         grouped.setdefault(row.track_id, []).append(row)
 

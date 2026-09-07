@@ -30,6 +30,8 @@ struct ThicknessRecord {
   double width_error_nm{std::numeric_limits<double>::quiet_NaN()};
   double width_relative_error{std::numeric_limits<double>::quiet_NaN()};
   double noise_sigma{std::numeric_limits<double>::quiet_NaN()};
+  double theta_deg{std::numeric_limits<double>::quiet_NaN()};
+  double local_theta_deg{std::numeric_limits<double>::quiet_NaN()};
 };
 
 struct QualityCuts {
@@ -41,12 +43,14 @@ struct QualityCuts {
   std::optional<double> maximum_width_error_nm;
   std::optional<double> maximum_width_relative_error;
   std::optional<double> maximum_width_nm;
+  std::optional<double> minimum_theta_deg;
+  std::optional<double> maximum_theta_deg;
 
   bool requested() const {
     return minimum_contrast || minimum_fit_r2 || maximum_fit_nrmse ||
            maximum_reduced_chi2 || minimum_fit_p_value ||
            maximum_width_error_nm || maximum_width_relative_error ||
-           maximum_width_nm;
+           maximum_width_nm || minimum_theta_deg || maximum_theta_deg;
   }
 };
 
@@ -58,7 +62,8 @@ inline bool is_quality_cut_option(const std::string &argument) {
          argument == "--minimum-fit-p-value" ||
          argument == "--maximum-width-error-nm" ||
          argument == "--maximum-width-relative-error" ||
-         argument == "--maximum-width-nm";
+         argument == "--maximum-width-nm" || argument == "--minimum-theta-deg" ||
+         argument == "--maximum-theta-deg";
 }
 
 inline void set_quality_cut(QualityCuts &cuts, const std::string &argument,
@@ -80,11 +85,20 @@ inline void set_quality_cut(QualityCuts &cuts, const std::string &argument,
     cuts.maximum_width_relative_error = value;
   else if (argument == "--maximum-width-nm")
     cuts.maximum_width_nm = value;
+  else if (argument == "--minimum-theta-deg")
+    cuts.minimum_theta_deg = value;
+  else if (argument == "--maximum-theta-deg")
+    cuts.maximum_theta_deg = value;
   else
     throw std::runtime_error("unknown quality-cut option: " + argument);
 }
 
 inline void validate_quality_cuts(const QualityCuts &cuts) {
+  for (const auto &value : {cuts.minimum_theta_deg, cuts.maximum_theta_deg})
+    if (value && (!std::isfinite(*value) || *value < 0 || *value > 90))
+      throw std::runtime_error("theta limits must be finite and between 0 and 90 degrees");
+  if (cuts.minimum_theta_deg && cuts.maximum_theta_deg && *cuts.minimum_theta_deg > *cuts.maximum_theta_deg)
+    throw std::runtime_error("minimum theta cannot exceed maximum theta");
   const auto require_nonnegative = [](const std::optional<double> &value,
                                       const std::string &name) {
     if (value && *value < 0.0)
@@ -144,7 +158,7 @@ read_thickness(const std::filesystem::path &path) {
         &row.contrast,          &row.fit_r2,
         &row.fit_nrmse,         &row.reduced_chi2,
         &row.fit_p_value,       &row.width_error_nm,
-        &row.width_relative_error, &row.noise_sigma};
+        &row.width_relative_error, &row.noise_sigma, &row.theta_deg, &row.local_theta_deg};
     for (std::size_t i = 0; i < std::size(optional_fields) && i + 5 < values.size(); ++i)
       *optional_fields[i] = values[i + 5];
     records.push_back(row);
@@ -163,7 +177,8 @@ write_thickness(const std::filesystem::path &path,
     throw std::runtime_error("cannot write " + path.string());
   output << "# columns: track_id distance_um resolution_nm width_nm sigma_nm "
             "contrast fit_r2 fit_nrmse reduced_chi2 fit_p_value "
-            "width_error_nm width_relative_error noise_sigma\n";
+            "width_error_nm width_relative_error noise_sigma theta_deg local_theta_deg\n";
+  output << "# theta convention: acquisition z; polar 0-180 deg; endpoint theta and local segment theta; nan if unavailable\n";
   for (const auto &comment : comments)
     output << "# " << comment << '\n';
   for (const auto &row : records) {
@@ -174,7 +189,8 @@ write_thickness(const std::filesystem::path &path,
            << row.reduced_chi2 << ' ' << std::scientific << row.fit_p_value
            << std::fixed << std::setprecision(6) << ' ' << row.width_error_nm
            << ' ' << std::setprecision(9) << row.width_relative_error << ' '
-           << std::setprecision(6) << row.noise_sigma << '\n';
+           << std::setprecision(6) << row.noise_sigma << ' '
+           << std::setprecision(9) << row.theta_deg << ' ' << row.local_theta_deg << '\n';
   }
 }
 
@@ -194,12 +210,28 @@ inline bool passes_quality(const ThicknessRecord &row, const QualityCuts &cuts) 
          maximum(row.width_error_nm, cuts.maximum_width_error_nm) &&
          maximum(row.width_relative_error,
                  cuts.maximum_width_relative_error) &&
-         maximum(row.width_nm, cuts.maximum_width_nm);
+         maximum(row.width_nm, cuts.maximum_width_nm) &&
+         minimum(std::min(row.theta_deg, 180 - row.theta_deg), cuts.minimum_theta_deg) &&
+         maximum(std::min(row.theta_deg, 180 - row.theta_deg), cuts.maximum_theta_deg);
+}
+
+inline std::map<int, double> embedded_angles(const std::vector<ThicknessRecord> &records) {
+  std::map<int, double> result;
+  for (const auto &row : records) {
+    if (!std::isfinite(row.theta_deg) || row.theta_deg < 0 || row.theta_deg > 180)
+      throw std::runtime_error("missing/invalid embedded theta; regenerate thickness or provide an angle table");
+    if (result.count(row.track_id) && std::abs(result.at(row.track_id) - row.theta_deg) > 1e-7)
+      throw std::runtime_error("inconsistent embedded theta for track " + std::to_string(row.track_id));
+    result[row.track_id] = row.theta_deg;
+  }
+  return result;
 }
 
 inline std::vector<VolumeRecord>
 calculate_volumes(std::vector<ThicknessRecord> records,
                   const QualityCuts &cuts = {}) {
+  if (cuts.minimum_theta_deg || cuts.maximum_theta_deg)
+    embedded_angles(records);
   std::map<int, std::vector<ThicknessRecord>> grouped;
   for (const auto &row : records)
     grouped[row.track_id].push_back(row);
